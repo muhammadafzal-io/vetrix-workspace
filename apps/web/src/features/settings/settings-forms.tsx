@@ -1,16 +1,29 @@
 "use client";
 
-import { useActionState, useState, useTransition } from "react";
-import { CalendarPlus, Loader2, Trash2 } from "lucide-react";
+import { useActionState, useEffect, useState, useTransition } from "react";
+import {
+  BellRing,
+  Bot,
+  Building2,
+  CalendarOff,
+  CalendarPlus,
+  CheckCircle2,
+  Clock,
+  Loader2,
+  MoonStar,
+  ScrollText,
+  Stethoscope,
+  Trash2,
+  type LucideIcon,
+} from "lucide-react";
 import { FormField } from "@/components/patterns/form-field";
-import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
-import { CheckboxField } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { fieldError, formDefaults, FormError, FormSection, SubmitButton } from "@/features/clients/form-bits";
+import { fieldError, formDefaults, FormError, SubmitButton } from "@/features/clients/form-bits";
 import type { ActionResult } from "@/lib/action-result";
+import { cn } from "@/lib/utils";
 import {
   addHolidayAction,
   removeHolidayAction,
@@ -24,9 +37,89 @@ import {
 } from "./actions";
 
 type FormAction = (state: ActionResult | null, form: FormData) => Promise<ActionResult>;
+type Defaults = ReturnType<typeof formDefaults>;
 
-/** A settings section with its own form, error and "Saved" message. */
-function SectionForm({
+// ---------- Building blocks ----------
+
+export const SECTIONS: { id: string; label: string; icon: LucideIcon }[] = [
+  { id: "details", label: "Clinic", icon: Building2 },
+  { id: "hours", label: "Opening hours", icon: Clock },
+  { id: "closed-days", label: "Closed days", icon: CalendarOff },
+  { id: "front-desk", label: "AI front desk", icon: Bot },
+  { id: "policies", label: "Policies", icon: ScrollText },
+  { id: "messaging", label: "Quiet hours", icon: MoonStar },
+  { id: "reminders", label: "Reminders", icon: BellRing },
+  { id: "services", label: "Services", icon: Stethoscope },
+];
+
+/** Section list: a sticky side menu on large screens, scrolling chips on small ones. Highlights the section in view. */
+export function SettingsNav() {
+  const [active, setActive] = useState(SECTIONS[0]!.id);
+  useEffect(() => {
+    const seen = new Map<string, boolean>();
+    const io = new IntersectionObserver(
+      (entries) => {
+        for (const e of entries) seen.set(e.target.id, e.isIntersecting);
+        const first = SECTIONS.find((s) => seen.get(s.id));
+        if (first) setActive(first.id);
+      },
+      { rootMargin: "-80px 0px -55% 0px" },
+    );
+    for (const s of SECTIONS) {
+      const el = document.getElementById(s.id);
+      if (el) io.observe(el);
+    }
+    return () => io.disconnect();
+  }, []);
+  return (
+    <nav aria-label="Settings sections" className="lg:sticky lg:top-24 lg:self-start">
+      <ul className="-mx-1 flex gap-1 overflow-x-auto px-1 pb-1 lg:mx-0 lg:grid lg:overflow-visible lg:px-0">
+        {SECTIONS.map(({ id, label, icon: Icon }) => (
+          <li key={id} className="shrink-0">
+            <a
+              href={`#${id}`}
+              aria-current={active === id ? "true" : undefined}
+              onClick={() => setActive(id)}
+              className={cn(
+                "flex items-center gap-2 rounded-full border px-3 py-1.5 text-small font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground",
+                "lg:rounded-md lg:border-transparent lg:px-3 lg:py-2",
+                active === id && "border-primary/30 bg-primary/10 text-primary hover:bg-primary/10 hover:text-primary",
+              )}
+            >
+              <Icon className="size-4 shrink-0" aria-hidden />
+              {label}
+            </a>
+          </li>
+        ))}
+      </ul>
+    </nav>
+  );
+}
+
+/** A settings card: icon, title and description, then its body. */
+function Card({ id, title, description, children, footer }: { id: string; title: string; description: string; children: React.ReactNode; footer?: React.ReactNode }) {
+  const Icon = SECTIONS.find((x) => x.id === id)?.icon ?? Building2;
+  return (
+    <section id={id} aria-labelledby={`${id}-title`} className="scroll-mt-24 overflow-hidden rounded-xl border bg-card shadow-card">
+      <header className="flex items-start gap-3 border-b px-5 py-4">
+        <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+          <Icon className="size-[18px]" aria-hidden />
+        </span>
+        <div className="grid gap-0.5">
+          <h2 id={`${id}-title`} className="text-body font-semibold">
+            {title}
+          </h2>
+          <p className="text-small text-muted-foreground">{description}</p>
+        </div>
+      </header>
+      <div className="grid gap-5 p-5">{children}</div>
+      {footer}
+    </section>
+  );
+}
+
+/** A card holding one form, with a Save bar at the bottom. */
+function FormCard({
   id,
   title,
   description,
@@ -39,22 +132,55 @@ function SectionForm({
   description: string;
   action: FormAction;
   fields: string[];
-  children: (d: ReturnType<typeof formDefaults>, state: ActionResult | null) => React.ReactNode;
+  children: (d: Defaults, state: ActionResult | null) => React.ReactNode;
 }) {
   const [state, formAction] = useActionState<ActionResult | null, FormData>(action, null);
   return (
-    <div id={id} className="scroll-mt-20">
-      <FormSection title={title} description={description}>
-        <form action={formAction} className="grid gap-4">
-          {children(formDefaults(state), state)}
-          <FormError state={state} fields={fields} />
-          {state?.ok && <Alert variant="success">{state.message}</Alert>}
-          <div>
-            <SubmitButton pendingText="Saving…">Save</SubmitButton>
+    <form action={formAction}>
+      <Card
+        id={id}
+        title={title}
+        description={description}
+        footer={
+          <div className="flex flex-wrap items-center justify-end gap-3 border-t bg-muted/40 px-5 py-3">
+            {state?.ok && (
+              <p role="status" className="mr-auto flex items-center gap-1.5 text-small text-success-text">
+                <CheckCircle2 className="size-4" aria-hidden /> {state.message}
+              </p>
+            )}
+            <SubmitButton pendingText="Saving…">Save changes</SubmitButton>
           </div>
-        </form>
-      </FormSection>
+        }
+      >
+        {children(formDefaults(state), state)}
+        <FormError state={state} fields={fields} />
+      </Card>
+    </form>
+  );
+}
+
+/** An input with a fixed unit inside it, like "$" or "hours". */
+function UnitInput({ prefix, suffix, className, ...props }: React.ComponentProps<typeof Input> & { prefix?: string; suffix?: string }) {
+  return (
+    <div className="relative">
+      {prefix && <span className="pointer-events-none absolute inset-y-0 left-3 flex items-center text-small text-muted-foreground">{prefix}</span>}
+      <Input {...props} className={cn(prefix && "pl-7", suffix && "pr-16", className)} />
+      {suffix && <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-small text-muted-foreground">{suffix}</span>}
     </div>
+  );
+}
+
+/** An on/off switch (a real checkbox underneath, so forms and screen readers work). */
+function Switch({ className, ...props }: Omit<React.ComponentProps<"input">, "type">) {
+  return (
+    <span className={cn("relative inline-flex shrink-0", className)}>
+      <input type="checkbox" role="switch" className="peer absolute inset-0 z-10 size-full cursor-pointer opacity-0 disabled:cursor-not-allowed" {...props} />
+      <span
+        aria-hidden
+        className="h-6 w-11 rounded-full bg-muted-foreground/30 transition-colors peer-checked:bg-primary peer-focus-visible:ring-2 peer-focus-visible:ring-ring peer-focus-visible:ring-offset-2 peer-disabled:opacity-50"
+      />
+      <span aria-hidden className="pointer-events-none absolute left-0.5 top-0.5 size-5 rounded-full bg-white shadow-sm transition-transform peer-checked:translate-x-5" />
+    </span>
   );
 }
 
@@ -70,7 +196,7 @@ export interface DetailsValues {
 
 export function DetailsForm({ saved, timezones }: { saved: DetailsValues; timezones: string[] }) {
   return (
-    <SectionForm
+    <FormCard
       id="details"
       title="Clinic details"
       description="Riley says the clinic name on every call. The time zone sets appointment times, reminders and quiet hours."
@@ -78,22 +204,20 @@ export function DetailsForm({ saved, timezones }: { saved: DetailsValues; timezo
       fields={["name", "address", "mainPhone", "website", "timezone"]}
     >
       {(d, state) => (
-        <>
+        <div className="grid items-start gap-4 sm:grid-cols-2">
           <FormField label="Clinic name" error={fieldError(state, "name")}>
             {(p) => <Input {...p} name="name" defaultValue={d.text("name", saved.name)} />}
           </FormField>
-          <FormField label="Address" error={fieldError(state, "address")}>
+          <FormField label="Main phone" error={fieldError(state, "mainPhone")}>
+            {(p) => <Input {...p} name="mainPhone" type="tel" placeholder="(555) 010-1000" defaultValue={d.text("mainPhone", saved.mainPhone)} />}
+          </FormField>
+          <FormField label="Address" error={fieldError(state, "address")} className="sm:col-span-2">
             {(p) => <Input {...p} name="address" defaultValue={d.text("address", saved.address)} />}
           </FormField>
-          <div className="grid gap-4 sm:grid-cols-2">
-            <FormField label="Main phone" error={fieldError(state, "mainPhone")}>
-              {(p) => <Input {...p} name="mainPhone" type="tel" defaultValue={d.text("mainPhone", saved.mainPhone)} />}
-            </FormField>
-            <FormField label="Website" error={fieldError(state, "website")}>
-              {(p) => <Input {...p} name="website" type="url" placeholder="https://" defaultValue={d.text("website", saved.website)} />}
-            </FormField>
-          </div>
-          <FormField label="Time zone" error={fieldError(state, "timezone")} hint="Changing this moves how every time is shown. Check the schedule after.">
+          <FormField label="Website" error={fieldError(state, "website")}>
+            {(p) => <Input {...p} name="website" type="url" placeholder="https://" defaultValue={d.text("website", saved.website)} />}
+          </FormField>
+          <FormField label="Time zone" error={fieldError(state, "timezone")} hint="Changing this moves how every time is shown.">
             {(p) => (
               <Select {...p} name="timezone" defaultValue={String(d.text("timezone", saved.timezone))}>
                 {timezones.map((tz) => (
@@ -104,9 +228,9 @@ export function DetailsForm({ saved, timezones }: { saved: DetailsValues; timezo
               </Select>
             )}
           </FormField>
-        </>
+        </div>
       )}
-    </SectionForm>
+    </FormCard>
   );
 }
 
@@ -118,53 +242,58 @@ const ORDER = [1, 2, 3, 4, 5, 6, 0];
 
 export function HoursForm({ saved }: { saved: ({ opens: string; closes: string } | null)[] }) {
   return (
-    <SectionForm
+    <FormCard
       id="hours"
       title="Opening hours"
       description="Riley offers times only inside these hours. Outside them, emergencies follow the after-hours setting."
       action={saveHoursAction}
       fields={[]}
     >
-      {(d) => (
-        <div className="grid gap-2">
+      {(d, state) => (
+        <ul className="divide-y rounded-lg border">
           {ORDER.map((day) => (
-            <HoursRow key={day} day={day} saved={saved[day] ?? null} d={d} />
+            <HoursRow key={day} day={day} saved={saved[day] ?? null} d={d} error={fieldError(state, `opens_${day}`) ?? fieldError(state, `closes_${day}`)} />
           ))}
-        </div>
+        </ul>
       )}
-    </SectionForm>
+    </FormCard>
   );
 }
 
-function HoursRow({ day, saved, d }: { day: number; saved: { opens: string; closes: string } | null; d: ReturnType<typeof formDefaults> }) {
-  const [closed, setClosed] = useState(d.submitted ? d.on(`closed_${day}`, false) : saved === null);
+function HoursRow({ day, saved, d, error }: { day: number; saved: { opens: string; closes: string } | null; d: Defaults; error?: string }) {
+  const [open, setOpen] = useState(d.submitted ? !d.on(`closed_${day}`, false) : saved !== null);
   return (
-    <div className="grid grid-cols-[6.5rem_minmax(0,1fr)] items-center gap-3 rounded-md border p-2 sm:grid-cols-[7rem_minmax(0,1fr)_auto]">
-      <span className="text-small font-medium">{DAYS[day]}</span>
-      <div className="flex items-center gap-2">
-        <Input
-          type="time"
-          name={`opens_${day}`}
-          aria-label={`${DAYS[day]} opens`}
-          disabled={closed}
-          defaultValue={String(d.text(`opens_${day}`, saved?.opens ?? "08:00"))}
-          className="h-9"
-        />
-        <span className="text-small text-muted-foreground">to</span>
-        <Input
-          type="time"
-          name={`closes_${day}`}
-          aria-label={`${DAYS[day]} closes`}
-          disabled={closed}
-          defaultValue={String(d.text(`closes_${day}`, saved?.closes ?? "18:00"))}
-          className="h-9"
-        />
+    <li className="grid gap-2 px-4 py-3">
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+        <label className="flex w-36 cursor-pointer items-center gap-3">
+          <Switch checked={open} onChange={(e) => setOpen(e.currentTarget.checked)} aria-label={`${DAYS[day]} open`} />
+          <span className="text-small font-medium">{DAYS[day]}</span>
+        </label>
+        {!open && <input type="hidden" name={`closed_${day}`} value="on" />}
+        {/* Times stay in the form while closed, so switching back keeps them. */}
+        <div className={cn("flex items-center gap-2", !open && "hidden")}>
+          <Input
+            type="time"
+            name={`opens_${day}`}
+            aria-label={`${DAYS[day]} opens`}
+            aria-invalid={error ? true : undefined}
+            defaultValue={String(d.text(`opens_${day}`, saved?.opens ?? "08:00"))}
+            className="h-9 w-32"
+          />
+          <span className="text-small text-muted-foreground">to</span>
+          <Input
+            type="time"
+            name={`closes_${day}`}
+            aria-label={`${DAYS[day]} closes`}
+            aria-invalid={error ? true : undefined}
+            defaultValue={String(d.text(`closes_${day}`, saved?.closes ?? "18:00"))}
+            className="h-9 w-32"
+          />
+        </div>
+        {!open && <span className="text-small text-muted-foreground">Closed</span>}
       </div>
-      <label className="col-span-2 flex cursor-pointer items-center gap-2 text-small sm:col-span-1">
-        <input type="checkbox" name={`closed_${day}`} checked={closed} onChange={(e) => setClosed(e.currentTarget.checked)} className="size-4 accent-[var(--primary)]" />
-        Closed
-      </label>
-    </div>
+      {error && <p className="text-small text-destructive">{error}</p>}
+    </li>
   );
 }
 
@@ -176,52 +305,65 @@ export function HolidaysPanel({ holidays }: { holidays: { id: string; date: stri
   const upcoming = holidays.filter((h) => h.date >= today);
   const past = holidays.length - upcoming.length;
   return (
-    <div id="closed-days" className="scroll-mt-20">
-      <FormSection title="Closed days" description="Holidays and other days the clinic is shut. Riley won't offer times on them.">
-        {upcoming.length === 0 ? (
-          <p className="text-small text-muted-foreground">No closed days coming up.</p>
-        ) : (
-          <ul className="grid gap-2">
-            {upcoming.map((h) => (
-              <HolidayRow key={h.id} holiday={h} />
-            ))}
-          </ul>
-        )}
-        {past > 0 && <p className="text-caption text-muted-foreground">{past} past closed {past === 1 ? "day is" : "days are"} kept for the record.</p>}
-        <form action={formAction} className="grid gap-3 sm:grid-cols-[10rem_minmax(0,1fr)_auto] sm:items-end" key={state?.ok ? state.message : "add"}>
+    <Card id="closed-days" title="Closed days" description="Holidays and other days the clinic is shut. Riley won't offer times on them.">
+      {upcoming.length === 0 ? (
+        <p className="rounded-lg border border-dashed px-4 py-6 text-center text-small text-muted-foreground">No closed days coming up.</p>
+      ) : (
+        <ul className="grid gap-2 sm:grid-cols-2">
+          {upcoming.map((h) => (
+            <HolidayRow key={h.id} holiday={h} />
+          ))}
+        </ul>
+      )}
+      {past > 0 && <p className="text-caption text-muted-foreground">{past} past closed {past === 1 ? "day is" : "days are"} kept for the record.</p>}
+      <form action={formAction} className="grid gap-3 rounded-lg bg-muted/40 p-4" key={state?.ok ? state.message : "add"}>
+        <p className="text-small font-medium">Add a closed day</p>
+        <div className="grid gap-3 sm:grid-cols-[11rem_minmax(0,1fr)_auto] sm:items-start">
           <FormField label="Date" error={fieldError(state, "date")}>
             {(p) => <Input {...p} name="date" type="date" min={today} />}
           </FormField>
           <FormField label="Name (optional)" error={fieldError(state, "name")}>
             {(p) => <Input {...p} name="name" placeholder="Thanksgiving" />}
           </FormField>
-          <SubmitButton pendingText="Adding…">
-            <CalendarPlus aria-hidden /> Add
-          </SubmitButton>
-        </form>
+          <div className="sm:pt-7">
+            <SubmitButton pendingText="Adding…">
+              <CalendarPlus aria-hidden /> Add
+            </SubmitButton>
+          </div>
+        </div>
         <FormError state={state} fields={["date", "name"]} />
-      </FormSection>
-    </div>
+        {state?.ok && (
+          <p role="status" className="flex items-center gap-1.5 text-small text-success-text">
+            <CheckCircle2 className="size-4" aria-hidden /> {state.message}
+          </p>
+        )}
+      </form>
+    </Card>
   );
 }
 
 function HolidayRow({ holiday }: { holiday: { id: string; date: string; name: string | null } }) {
   const [pending, start] = useTransition();
   const [error, setError] = useState<string | null>(null);
-  const label = new Date(`${holiday.date}T12:00:00Z`).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", year: "numeric", timeZone: "UTC" });
+  const at = new Date(`${holiday.date}T12:00:00Z`);
+  const fmt = (o: Intl.DateTimeFormatOptions) => at.toLocaleDateString("en-US", { ...o, timeZone: "UTC" });
   return (
-    <li className="flex items-center gap-3 rounded-md border px-3 py-2">
-      <span className="min-w-0 flex-1 text-small">
-        <span className="font-medium">{label}</span>
-        {holiday.name && <span className="text-muted-foreground"> · {holiday.name}</span>}
-        {error && <span className="block text-caption text-destructive">{error}</span>}
+    <li className="flex items-center gap-3 rounded-lg border px-3 py-2">
+      <span className="flex size-11 shrink-0 flex-col items-center justify-center rounded-md bg-secondary text-secondary-foreground">
+        <span className="text-[10px] font-semibold uppercase leading-none">{fmt({ month: "short" })}</span>
+        <span className="text-body font-semibold leading-tight">{fmt({ day: "numeric" })}</span>
+      </span>
+      <span className="grid min-w-0 flex-1">
+        <span className="truncate text-small font-medium">{holiday.name ?? "Closed"}</span>
+        <span className="text-caption text-muted-foreground">{`${fmt({ weekday: "long" })}, ${fmt({ year: "numeric" })}`}</span>
+        {error && <span className="text-caption text-destructive">{error}</span>}
       </span>
       <Button
         type="button"
         variant="ghost"
         size="sm"
         disabled={pending}
-        aria-label={`Remove ${label}`}
+        aria-label={`Remove ${fmt({ month: "long", day: "numeric", year: "numeric" })}`}
         onClick={() =>
           start(async () => {
             const r = await removeHolidayAction(holiday.id);
@@ -246,55 +388,69 @@ export interface FrontDeskValues {
   erAddress: string | null;
 }
 
+const AFTER_HOURS = [
+  { value: "er_and_book_next", title: "Emergency hospital, then book", hint: "Give the emergency hospital's details, then offer the next open time." },
+  { value: "er_only", title: "Emergency hospital only", hint: "Give the emergency hospital's details and end the call." },
+] as const;
+
 export function FrontDeskForm({ saved }: { saved: FrontDeskValues }) {
   const fields = ["aiName", "emergencyTransferNumber", "afterHoursBehaviour", "erName", "erPhone", "erAddress"];
   return (
-    <SectionForm
-      id="front-desk"
-      title="AI front desk"
-      description="How Riley introduces itself and where emergencies go."
-      action={saveFrontDeskAction}
-      fields={fields}
-    >
-      {(d, state) => (
-        <>
-          <div className="grid gap-4 sm:grid-cols-2">
-            <FormField label="Assistant's name" error={fieldError(state, "aiName")} hint="Said in the greeting and texts.">
-              {(p) => <Input {...p} name="aiName" defaultValue={d.text("aiName", saved.aiName)} />}
-            </FormField>
-            <FormField
-              label="Emergency transfer number"
-              error={fieldError(state, "emergencyTransferNumber")}
-              hint="During open hours, emergency calls go straight to this number."
-            >
-              {(p) => <Input {...p} name="emergencyTransferNumber" type="tel" defaultValue={d.text("emergencyTransferNumber", saved.emergencyTransferNumber)} />}
-            </FormField>
-          </div>
-          <FormField label="After hours" error={fieldError(state, "afterHoursBehaviour")}>
-            {(p) => (
-              <Select {...p} name="afterHoursBehaviour" defaultValue={String(d.text("afterHoursBehaviour", saved.afterHoursBehaviour))}>
-                <option value="er_and_book_next">Give the emergency hospital, then offer the next open time</option>
-                <option value="er_only">Give the emergency hospital only</option>
-              </Select>
-            )}
-          </FormField>
-          <fieldset className="grid gap-4 rounded-md border p-4">
-            <legend className="px-1 text-small font-semibold">Emergency hospital (after hours)</legend>
-            <FormField label="Name" error={fieldError(state, "erName")}>
-              {(p) => <Input {...p} name="erName" defaultValue={d.text("erName", saved.erName)} />}
-            </FormField>
-            <div className="grid gap-4 sm:grid-cols-2">
-              <FormField label="Phone" error={fieldError(state, "erPhone")}>
-                {(p) => <Input {...p} name="erPhone" type="tel" defaultValue={d.text("erPhone", saved.erPhone)} />}
+    <FormCard id="front-desk" title="AI front desk" description="How Riley introduces itself and where emergencies go." action={saveFrontDeskAction} fields={fields}>
+      {(d, state) => {
+        const behaviour = String(d.text("afterHoursBehaviour", saved.afterHoursBehaviour));
+        return (
+          <>
+            <div className="grid items-start gap-4 sm:grid-cols-2">
+              <FormField label="Assistant's name" error={fieldError(state, "aiName")} hint="Said in the greeting and texts.">
+                {(p) => <Input {...p} name="aiName" defaultValue={d.text("aiName", saved.aiName)} className="sm:max-w-56" />}
               </FormField>
-              <FormField label="Address" error={fieldError(state, "erAddress")}>
-                {(p) => <Input {...p} name="erAddress" defaultValue={d.text("erAddress", saved.erAddress)} />}
+              <FormField label="Emergency transfer number" error={fieldError(state, "emergencyTransferNumber")} hint="During open hours, emergency calls go straight here.">
+                {(p) => <Input {...p} name="emergencyTransferNumber" type="tel" placeholder="(555) 010-1001" defaultValue={d.text("emergencyTransferNumber", saved.emergencyTransferNumber)} />}
               </FormField>
             </div>
-          </fieldset>
-        </>
-      )}
-    </SectionForm>
+
+            <fieldset className="grid gap-2">
+              <legend className="mb-2 text-small font-medium">After hours</legend>
+              <div className="grid gap-2 sm:grid-cols-2">
+                {AFTER_HOURS.map((o) => (
+                  <label
+                    key={o.value}
+                    className="flex cursor-pointer items-start gap-3 rounded-lg border p-3 transition-colors hover:bg-muted/50 has-[:checked]:border-primary has-[:checked]:bg-primary/5"
+                  >
+                    <input type="radio" name="afterHoursBehaviour" value={o.value} defaultChecked={behaviour === o.value} className="mt-0.5 size-4 accent-[var(--primary)]" />
+                    <span className="grid gap-0.5">
+                      <span className="text-small font-medium">{o.title}</span>
+                      <span className="text-caption text-muted-foreground">{o.hint}</span>
+                    </span>
+                  </label>
+                ))}
+              </div>
+              {fieldError(state, "afterHoursBehaviour") && <p className="text-small text-destructive">{fieldError(state, "afterHoursBehaviour")}</p>}
+            </fieldset>
+
+            <fieldset className="grid gap-4 rounded-lg bg-muted/40 p-4">
+              <legend className="sr-only">Emergency hospital</legend>
+              <div className="grid gap-0.5">
+                <p className="text-small font-medium">Emergency hospital</p>
+                <p className="text-caption text-muted-foreground">Where Riley sends emergencies when the clinic is closed. Give all three, or leave all empty.</p>
+              </div>
+              <div className="grid items-start gap-4 sm:grid-cols-2">
+                <FormField label="Name" error={fieldError(state, "erName")}>
+                  {(p) => <Input {...p} name="erName" defaultValue={d.text("erName", saved.erName)} />}
+                </FormField>
+                <FormField label="Phone" error={fieldError(state, "erPhone")}>
+                  {(p) => <Input {...p} name="erPhone" type="tel" defaultValue={d.text("erPhone", saved.erPhone)} />}
+                </FormField>
+                <FormField label="Address" error={fieldError(state, "erAddress")} className="sm:col-span-2">
+                  {(p) => <Input {...p} name="erAddress" defaultValue={d.text("erAddress", saved.erAddress)} />}
+                </FormField>
+              </div>
+            </fieldset>
+          </>
+        );
+      }}
+    </FormCard>
   );
 }
 
@@ -314,38 +470,44 @@ export interface PolicyValues {
 export function PoliciesForm({ saved }: { saved: PolicyValues }) {
   const fields = ["cancellationWindowHours", "cancellationFee", "surgeryDeposit", "refillTurnaround", "newClientPolicy", "recordsReleasePolicy", "recordingRetentionMonths"];
   return (
-    <SectionForm id="policies" title="Policies" description="What Riley tells clients about cancelling, fees and refills." action={savePoliciesAction} fields={fields}>
+    <FormCard id="policies" title="Policies" description="What Riley tells clients about cancelling, fees, refills and records." action={savePoliciesAction} fields={fields}>
       {(d, state) => (
         <>
-          <div className="grid gap-4 sm:grid-cols-2">
-            <FormField label="Cancellation notice (hours)" error={fieldError(state, "cancellationWindowHours")}>
-              {(p) => <Input {...p} name="cancellationWindowHours" type="number" min={0} max={168} defaultValue={d.text("cancellationWindowHours", saved.cancellationWindowHours)} />}
+          <div className="grid items-start gap-4 sm:grid-cols-3">
+            <FormField label="Cancellation notice" error={fieldError(state, "cancellationWindowHours")}>
+              {(p) => <UnitInput {...p} suffix="hours" name="cancellationWindowHours" type="number" min={0} max={168} defaultValue={d.text("cancellationWindowHours", saved.cancellationWindowHours)} />}
             </FormField>
-            <FormField label="Late cancellation fee ($)" error={fieldError(state, "cancellationFee")} hint="Leave empty for no fee.">
-              {(p) => <Input {...p} name="cancellationFee" inputMode="decimal" defaultValue={d.text("cancellationFee", saved.cancellationFee?.toFixed(2))} />}
+            <FormField label="Late cancellation fee" error={fieldError(state, "cancellationFee")} hint="Empty means no fee.">
+              {(p) => <UnitInput {...p} prefix="$" name="cancellationFee" inputMode="decimal" placeholder="0.00" defaultValue={d.text("cancellationFee", saved.cancellationFee?.toFixed(2))} />}
             </FormField>
-            <FormField label="Surgery deposit ($)" error={fieldError(state, "surgeryDeposit")}>
-              {(p) => <Input {...p} name="surgeryDeposit" inputMode="decimal" defaultValue={d.text("surgeryDeposit", saved.surgeryDeposit?.toFixed(2))} />}
+            <FormField label="Surgery deposit" error={fieldError(state, "surgeryDeposit")} hint="Empty means no deposit.">
+              {(p) => <UnitInput {...p} prefix="$" name="surgeryDeposit" inputMode="decimal" placeholder="0.00" defaultValue={d.text("surgeryDeposit", saved.surgeryDeposit?.toFixed(2))} />}
             </FormField>
             <FormField label="Refill turnaround" error={fieldError(state, "refillTurnaround")} hint='For example "24 hours".'>
               {(p) => <Input {...p} name="refillTurnaround" defaultValue={d.text("refillTurnaround", saved.refillTurnaround)} />}
             </FormField>
-          </div>
-          <FormField label="New clients" error={fieldError(state, "newClientPolicy")}>
-            {(p) => <Textarea {...p} name="newClientPolicy" rows={2} defaultValue={d.text("newClientPolicy", saved.newClientPolicy)} />}
-          </FormField>
-          <FormField label="Medical records" error={fieldError(state, "recordsReleasePolicy")}>
-            {(p) => <Textarea {...p} name="recordsReleasePolicy" rows={2} defaultValue={d.text("recordsReleasePolicy", saved.recordsReleasePolicy)} />}
-          </FormField>
-          <div className="grid gap-4 sm:grid-cols-2 sm:items-end">
-            <FormField label="Keep call recordings (months)" error={fieldError(state, "recordingRetentionMonths")}>
-              {(p) => <Input {...p} name="recordingRetentionMonths" type="number" min={1} max={120} defaultValue={d.text("recordingRetentionMonths", saved.recordingRetentionMonths)} />}
+            <FormField label="Keep call recordings" error={fieldError(state, "recordingRetentionMonths")}>
+              {(p) => <UnitInput {...p} suffix="months" name="recordingRetentionMonths" type="number" min={1} max={120} defaultValue={d.text("recordingRetentionMonths", saved.recordingRetentionMonths)} />}
             </FormField>
-            <CheckboxField name="telehealthEnabled" label="Offers telehealth visits" defaultChecked={d.on("telehealthEnabled", saved.telehealthEnabled)} />
+            <div className="grid gap-2">
+              <span className="text-small font-medium">Telehealth</span>
+              <label className="flex h-10 cursor-pointer items-center gap-3">
+                <Switch name="telehealthEnabled" defaultChecked={d.on("telehealthEnabled", saved.telehealthEnabled)} />
+                <span className="text-small">Offers telehealth visits</span>
+              </label>
+            </div>
+          </div>
+          <div className="grid items-start gap-4 sm:grid-cols-2">
+            <FormField label="New clients" error={fieldError(state, "newClientPolicy")}>
+              {(p) => <Textarea {...p} name="newClientPolicy" rows={3} defaultValue={d.text("newClientPolicy", saved.newClientPolicy)} />}
+            </FormField>
+            <FormField label="Medical records" error={fieldError(state, "recordsReleasePolicy")}>
+              {(p) => <Textarea {...p} name="recordsReleasePolicy" rows={3} defaultValue={d.text("recordsReleasePolicy", saved.recordsReleasePolicy)} />}
+            </FormField>
           </div>
         </>
       )}
-    </SectionForm>
+    </FormCard>
   );
 }
 
@@ -353,74 +515,94 @@ export function PoliciesForm({ saved }: { saved: PolicyValues }) {
 
 export function MessagingForm({ saved, timezone }: { saved: { quietStart: string; quietEnd: string }; timezone: string }) {
   return (
-    <SectionForm
+    <FormCard
       id="messaging"
       title="Quiet hours"
-      description={`No reminder or staff texts go out between these times (${timezone.replace(/_/g, " ")}). Replies to a client who just texted still go out.`}
+      description="No reminder or staff texts go out in this window. Replies to a client who just texted still go out."
       action={saveMessagingAction}
       fields={["quietStart", "quietEnd"]}
     >
       {(d, state) => (
-        <div className="grid gap-4 sm:grid-cols-2">
+        <div className="flex flex-wrap items-start gap-4">
           <FormField label="From" error={fieldError(state, "quietStart")}>
-            {(p) => <Input {...p} name="quietStart" type="time" defaultValue={d.text("quietStart", saved.quietStart)} />}
+            {(p) => <Input {...p} name="quietStart" type="time" className="w-36" defaultValue={d.text("quietStart", saved.quietStart)} />}
           </FormField>
           <FormField label="Until" error={fieldError(state, "quietEnd")}>
-            {(p) => <Input {...p} name="quietEnd" type="time" defaultValue={d.text("quietEnd", saved.quietEnd)} />}
+            {(p) => <Input {...p} name="quietEnd" type="time" className="w-36" defaultValue={d.text("quietEnd", saved.quietEnd)} />}
           </FormField>
+          <p className="self-end pb-2.5 text-small text-muted-foreground">Clinic time ({timezone.replace(/_/g, " ")})</p>
         </div>
       )}
-    </SectionForm>
+    </FormCard>
   );
 }
 
-// ---------- Toggles (reminders, services) ----------
+// ---------- Reminders and services ----------
 
-export function ToggleRow({
-  kind,
-  id,
-  label,
-  detail,
-  on,
-  disabled,
-}: {
-  kind: "reminder" | "service";
-  id: string;
-  label: string;
-  detail?: string;
-  on: boolean;
-  disabled?: boolean;
-}) {
+export function RemindersCard({ rules }: { rules: { id: string; name: string; enabled: boolean; running: boolean }[] }) {
+  return (
+    <Card id="reminders" title="Reminders" description="Which reminders go out. Turning one off stops new texts for it; reminders already sent stay in the log.">
+      <ul className="grid gap-2 sm:grid-cols-2">
+        {rules.map((r) => (
+          <ToggleRow key={r.id} kind="reminder" id={r.id} label={r.name} detail={r.running ? undefined : "Coming in a later update"} on={r.enabled} disabled={!r.running} />
+        ))}
+      </ul>
+    </Card>
+  );
+}
+
+export function ServicesCard({ groups }: { groups: { label: string; services: { id: string; name: string; durationMin: number; active: boolean }[] }[] }) {
+  return (
+    <Card id="services" title="Services" description="Turn off a service the clinic doesn't offer. Riley and staff can't book it; visits already booked stay.">
+      {groups.map((g) => (
+        <div key={g.label} className="grid gap-2">
+          <h3 className="flex items-center justify-between text-caption font-semibold uppercase tracking-wide text-muted-foreground">
+            {g.label}
+            <span className="font-normal normal-case tracking-normal">
+              {g.services.filter((s) => s.active).length} of {g.services.length} on
+            </span>
+          </h3>
+          <ul className="grid gap-2 sm:grid-cols-2">
+            {g.services.map((x) => (
+              <ToggleRow key={x.id} kind="service" id={x.id} label={x.name} detail={x.durationMin ? `${x.durationMin} min` : undefined} on={x.active} />
+            ))}
+          </ul>
+        </div>
+      ))}
+    </Card>
+  );
+}
+
+function ToggleRow({ kind, id, label, detail, on, disabled }: { kind: "reminder" | "service"; id: string; label: string; detail?: string; on: boolean; disabled?: boolean }) {
   const [checked, setChecked] = useState(on);
   const [pending, start] = useTransition();
   const [error, setError] = useState<string | null>(null);
   return (
-    <li className="flex items-center gap-3 rounded-md border px-3 py-2">
-      <span className="grid min-w-0 flex-1 gap-0.5">
-        <span className="text-small font-medium">{label}</span>
-        {detail && <span className="text-caption text-muted-foreground">{detail}</span>}
-        {error && <span className="text-caption text-destructive">{error}</span>}
-      </span>
-      {pending && <Loader2 className="size-4 animate-spin text-muted-foreground" aria-hidden />}
-      <input
-        type="checkbox"
-        role="switch"
-        aria-label={`${label}: ${checked ? "on" : "off"}`}
-        checked={checked}
-        disabled={disabled || pending}
-        className="size-5 cursor-pointer accent-[var(--primary)] disabled:cursor-not-allowed"
-        onChange={(e) => {
-          const next = e.currentTarget.checked;
-          setChecked(next);
-          start(async () => {
-            const r = kind === "reminder" ? await setReminderRuleAction(id, next) : await setServiceActiveAction(id, next);
-            if (!r.ok) {
-              setChecked(!next);
-              setError(r.error);
-            } else setError(null);
-          });
-        }}
-      />
+    <li>
+      <label className={cn("flex items-center gap-3 rounded-lg border px-3 py-2.5 transition-colors", disabled ? "cursor-not-allowed bg-muted/40" : "cursor-pointer hover:bg-muted/50")}>
+        <span className="grid min-w-0 flex-1 gap-0.5">
+          <span className={cn("truncate text-small font-medium", disabled && "text-muted-foreground")}>{label}</span>
+          {detail && <span className="text-caption text-muted-foreground">{detail}</span>}
+          {error && <span className="text-caption text-destructive">{error}</span>}
+        </span>
+        {pending && <Loader2 className="size-4 animate-spin text-muted-foreground" aria-hidden />}
+        <Switch
+          aria-label={label}
+          checked={checked}
+          disabled={disabled || pending}
+          onChange={(e) => {
+            const next = e.currentTarget.checked;
+            setChecked(next);
+            start(async () => {
+              const r = kind === "reminder" ? await setReminderRuleAction(id, next) : await setServiceActiveAction(id, next);
+              if (!r.ok) {
+                setChecked(!next);
+                setError(r.error);
+              } else setError(null);
+            });
+          }}
+        />
+      </label>
     </li>
   );
 }

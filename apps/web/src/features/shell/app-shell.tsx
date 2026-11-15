@@ -242,7 +242,8 @@ export function AppShell({ user, organization, organizationCount, location, loca
   // ⌘K on Mac, Ctrl+K elsewhere.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key.toLowerCase() === "k" && (e.metaKey || e.ctrlKey)) {
+      // Browser autofill sends key events with no key.
+      if (typeof e.key === "string" && e.key.toLowerCase() === "k" && (e.metaKey || e.ctrlKey)) {
         e.preventDefault();
         setSearchOpen((o) => !o);
       }
