@@ -21,3 +21,4 @@ export * from "./replies";
 export * from "./jobs";
 export * from "./waitlist";
 export * from "./settings";
+export * from "./booking-links";

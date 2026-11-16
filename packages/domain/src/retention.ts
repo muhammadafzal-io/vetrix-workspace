@@ -207,8 +207,10 @@ export interface SendValues {
   clinicName: string;
   aiName: string;
   clinicPhone: string;
-  /** No online booking page yet: replying reaches the front desk. */
+  /** Used when there is no personal link (e.g. "reply to this text"). */
   bookingLink: string;
+  /** A personal online booking link for this message: the client and the pets and visits it covers. */
+  linkFor?: (clientId: string, touches: PlannedTouch[]) => string;
 }
 
 export interface PlannedTouch {
@@ -286,6 +288,8 @@ export function planSends(input: {
     for (const channel of allowed) singles.push({ item, touch: latest, channel });
   }
 
+  const link = (clientId: string, touches: PlannedTouch[]) => input.values.linkFor?.(clientId, touches) ?? input.values.bookingLink;
+
   const fill = (template: string, one: One, petNames?: string[], what?: string) => {
     const pet = pets.get(one.item.patientId)!;
     const client = clients.get(one.item.clientId);
@@ -293,7 +297,7 @@ export function planSends(input: {
       clinic_name: input.values.clinicName,
       ai_name: input.values.aiName,
       clinic_phone: input.values.clinicPhone,
-      booking_link: input.values.bookingLink,
+      booking_link: link(one.item.clientId, [{ ruleId: one.item.ruleId, patientId: one.item.patientId, dueAt: one.item.dueAt, touchIndex: one.touch.index }]),
       client_first_name: client?.firstName ?? "",
       pet_name: pet.name,
       pet_names_joined: joinNames(petNames ?? [pet.name]),
@@ -319,13 +323,14 @@ export function planSends(input: {
     const names = [...petIds].map((id) => pets.get(id)!.name);
     const whats = joinNames(inWindow.map((g) => WHAT[g.item.ruleId]?.(g.item.detail) ?? "a visit"));
     const sentence = fillScript(input.merge.template_multi, { pet_names_joined: joinNames(names), what_joined: whats });
+    const touches = inWindow.map((g) => ({ ruleId: g.item.ruleId, patientId: g.item.patientId, dueAt: g.item.dueAt, touchIndex: g.touch.index }));
     plans.push({
       clientId: first.item.clientId,
       channel: first.channel,
       templateKey: "household_reminder",
-      body: `${input.values.clinicName}: ${sentence}. Book: ${input.values.bookingLink}`,
+      body: `${input.values.clinicName}: ${sentence}. Book: ${link(first.item.clientId, touches)}`,
       petNames: names,
-      touches: inWindow.map((g) => ({ ruleId: g.item.ruleId, patientId: g.item.patientId, dueAt: g.item.dueAt, touchIndex: g.touch.index })),
+      touches,
     });
     for (const g of inWindow) used.add(g);
   }

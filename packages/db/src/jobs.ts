@@ -21,6 +21,7 @@ export interface JobValues {
   aiName: string;
   clinicPhone: string;
   bookingLink: string;
+  bookingLinkBase?: string;
 }
 
 export interface JobResult {

@@ -6,7 +6,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { getSessionCookie } from "better-auth/cookies";
 
 // Public pages: sign-in, and waitlist claim links from texts.
-const PUBLIC_PATHS = ["/sign-in", "/forgot-password", "/reset-password", "/claim"];
+const PUBLIC_PATHS = ["/sign-in", "/forgot-password", "/reset-password", "/claim", "/b"];
 
 export function middleware(request: NextRequest) {
   const { pathname, search } = request.nextUrl;

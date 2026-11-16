@@ -7,6 +7,7 @@ import { aiPersonaName, messagingSettings, runReminders, stopReminder, withTrans
 import { clinicToday } from "@/lib/clinic-date";
 import { getMessagingMode } from "@/lib/env";
 import { logger } from "@/lib/logger";
+import { bookingLinkBase } from "@/lib/booking-link";
 import { deliverQueued } from "@/lib/outbound";
 import { requireShell } from "@/lib/session";
 
@@ -44,7 +45,7 @@ export async function runRemindersAction(asOfInput: string): Promise<RunResult> 
         sandbox,
         quietHours: quiet,
         actor,
-        values: { clinicName: settings.clinicName, aiName, clinicPhone: phone ? safeFormat(phone) : "the clinic", bookingLink: "reply to this text" },
+        values: { clinicName: settings.clinicName, aiName, clinicPhone: phone ? safeFormat(phone) : "the clinic", bookingLink: "reply to this text", bookingLinkBase: bookingLinkBase(shell.organization.organization_slug) },
       }),
     );
 

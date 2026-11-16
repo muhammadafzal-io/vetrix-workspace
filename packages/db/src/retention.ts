@@ -13,6 +13,7 @@ import {
 } from "@vetrix/domain";
 import { randomUUID } from "node:crypto";
 import { getVeterinaryPack } from "@vetrix/pack";
+import { newBookingToken, saveReminderLinks, type PendingLink } from "./booking-links";
 import { writeAudit, type Actor } from "./clients";
 import type { SqlClient } from "./sql-client";
 
@@ -157,10 +158,20 @@ export interface RunSummary {
  */
 export async function runReminders(
   db: SqlClient,
-  input: { locationId: string; asOf: string; sandbox: boolean; quietHours: boolean; values: { clinicName: string; aiName: string; clinicPhone: string; bookingLink: string }; actor: Actor },
+  input: { locationId: string; asOf: string; sandbox: boolean; quietHours: boolean; values: { clinicName: string; aiName: string; clinicPhone: string; bookingLink: string; /** Online booking page base, e.g. https://app/b/clinic-slug: each message gets its own link. */ bookingLinkBase?: string }; actor: Actor },
 ): Promise<{ summary: RunSummary; outbound: { messageId: string; clientId: string; channel: SendPlan["channel"]; body: string }[] }> {
   const { rows, input: data } = await previewReminders(db, input.locationId, input.asOf);
   const sent = await sentTouches(db, input.locationId);
+  // Personal booking links: one per message, saved with the message below.
+  const pending = new Map<string, PendingLink>();
+  const base = input.values.bookingLinkBase?.replace(/\/$/, "");
+  const linkFor = base
+    ? (clientId: string, touches: PendingLink["touches"]) => {
+        const token = newBookingToken();
+        pending.set(token, { token, clientId, touches });
+        return `${base}/${token}`;
+      }
+    : undefined;
   const p = pack();
   const plan = planSends({
     items: rows,
@@ -169,7 +180,7 @@ export async function runReminders(
     sent,
     templates: p.templates,
     merge: { ...p.household_merge, windowDays: p.engine.household_merge_window_days },
-    values: input.values,
+    values: { ...input.values, linkFor },
   });
   const ruleIds = new Map(
     (await db.query<{ id: string; pack_rule_id: string }>(`SELECT id, pack_rule_id FROM reminder_rules WHERE location_id = $1`, [input.locationId])).rows.map((r) => [r.pack_rule_id, r.id]),
@@ -220,6 +231,7 @@ export async function runReminders(
        // A household message is about several pets: keep it unlinked so a reply asks which.
        messages.map((m) => (m.touches.length === 1 ? m.touches[0]!.patientId : null))],
     );
+    if (pending.size) await saveReminderLinks(db, { locationId: input.locationId, now: Date.now(), messages, pending });
   }
   if (touches.length) {
     const rid = (t: T) => reminders.get(`${ruleOf(t)}|${t.patientId}|${t.dueAt}`)!;

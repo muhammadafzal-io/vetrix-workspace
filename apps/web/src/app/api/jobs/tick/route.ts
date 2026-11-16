@@ -5,6 +5,7 @@
 import { timingSafeEqual } from "node:crypto";
 import { aiPersonaName, listTenantDatabases, queuedMessages, runDueJobs, withTransaction } from "@vetrix/db/runtime";
 import { formatPhone } from "@vetrix/domain";
+import { bookingLinkBase } from "@/lib/booking-link";
 import { getEnv, getMessagingMode } from "@/lib/env";
 import { logger } from "@/lib/logger";
 import { deliverQueued } from "@/lib/outbound";
@@ -45,7 +46,7 @@ export async function POST(request: Request) {
       for (const loc of locations) {
         try {
           const aiName = await aiPersonaName(pool, loc.id);
-          const values = { clinicName: loc.name, aiName, clinicPhone: phone(loc.main_phone), bookingLink: "reply to this text" };
+          const values = { clinicName: loc.name, aiName, clinicPhone: phone(loc.main_phone), bookingLink: "reply to this text", bookingLinkBase: bookingLinkBase(tenant.organization_slug) };
           const r = await withTransaction(pool, (tx) => runDueJobs(tx, { locationId: loc.id, now, sandbox, values }));
           // Live: send everything queued at this location (this run's messages,
           // waitlist offers, replies saved by other paths).
