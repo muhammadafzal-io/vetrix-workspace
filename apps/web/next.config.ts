@@ -3,23 +3,33 @@ import type { NextConfig } from "next";
 
 // Basic protections on every response. A full script CSP needs nonces and is
 // added with the first deployment; these headers are safe today.
-const securityHeaders = [
-  { key: "X-Frame-Options", value: "DENY" },
+const sharedHeaders = [
   { key: "X-Content-Type-Options", value: "nosniff" },
   { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
   { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=(), payment=()" },
-  { key: "Content-Security-Policy", value: "frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'" },
   ...(process.env.NODE_ENV === "production"
     ? [{ key: "Strict-Transport-Security", value: "max-age=63072000; includeSubDomains; preload" }]
     : []),
+];
+const securityHeaders = [
+  ...sharedHeaders,
+  { key: "X-Frame-Options", value: "DENY" },
+  { key: "Content-Security-Policy", value: "frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'" },
 ];
 
 const nextConfig: NextConfig = {
   poweredByHeader: false,
   async headers() {
-    return [{ source: "/:path*", headers: securityHeaders }];
+    return [
+      // The booking widget (/w/...) can be framed by the clinic's own sites:
+      // middleware sets its frame-ancestors from the clinic's settings.
+      { source: "/((?!w/).*)", headers: securityHeaders },
+      { source: "/w/:path*", headers: sharedHeaders },
+    ];
   },
   reactStrictMode: true,
+  // No Next.js dev badge: it showed inside the booking widget's frame.
+  devIndicators: false,
   // Lets a verification build use its own folder (NEXT_DIST_DIR=.next-verify)
   // so it never overwrites the files of a running `pnpm dev` server.
   distDir: process.env.NEXT_DIST_DIR || ".next",

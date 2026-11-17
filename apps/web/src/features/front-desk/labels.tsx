@@ -1,5 +1,5 @@
 // Small shared bits for calls and tasks: triage badges, channel icons and times.
-import { MessageSquareText, PhoneCall } from "lucide-react";
+import { Globe, MessageSquareText, PhoneCall } from "lucide-react";
 import type { TriageLevel } from "@vetrix/domain";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
@@ -18,9 +18,11 @@ export function SandboxBadge({ className }: { className?: string }) {
   );
 }
 
-export function ChannelIcon({ channel, className }: { channel: "voice" | "sms"; className?: string }) {
-  const Icon = channel === "voice" ? PhoneCall : MessageSquareText;
-  return <Icon className={cn("size-4", className)} aria-label={channel === "voice" ? "Phone call" : "Text conversation"} />;
+export const CHANNEL_LABEL = { voice: "Phone call", sms: "Text conversation", web: "Web chat" } as const;
+
+export function ChannelIcon({ channel, className }: { channel: "voice" | "sms" | "web"; className?: string }) {
+  const Icon = channel === "voice" ? PhoneCall : channel === "web" ? Globe : MessageSquareText;
+  return <Icon className={cn("size-4", className)} aria-label={CHANNEL_LABEL[channel]} />;
 }
 
 /** "Today 9:41 AM", "Yesterday 4:02 PM" or "Nov 12, 9:41 AM", in clinic time. */

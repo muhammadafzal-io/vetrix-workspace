@@ -1,32 +1,30 @@
 import type { CSSProperties } from "react";
-import { ShieldCheck } from "lucide-react";
+import { CalendarCheck2, ShieldCheck } from "lucide-react";
 import { BrandBackdrop, Highlight, LogoOnDark } from "@/components/vetrix/brand-backdrop";
-import { formatPhone, normalizePhone } from "@vetrix/domain";
 import { BookingScene } from "@/features/auth/booking-scene";
-import { publicTrialSetup } from "@/features/public-try/actions";
-import { TryRiley } from "@/features/public-try/try-riley";
 import { getEnv } from "@/lib/env";
 
 export const dynamic = "force-dynamic";
 
 const delay = (seconds: number): CSSProperties => ({ animationDelay: `${seconds}s` });
 
-/** The clinic's number for the "Call Riley" button (PUBLIC_CALL_NUMBER), if set. */
-function callNumber(): { tel: string; display: string } | null {
-  const raw = getEnv().PUBLIC_CALL_NUMBER;
-  if (!raw) return null;
-  try {
-    const e164 = normalizePhone(raw);
-    return { tel: e164, display: formatPhone(e164) };
-  } catch {
-    return null;
-  }
-}
-
 /** Form on the right; from large screens up, a booking scene on the left. */
 export default async function AuthLayout({ children }: { children: React.ReactNode }) {
-  const trial = await publicTrialSetup();
-  const tryRiley = <TryRiley aiName={trial.aiName} callers={trial.callers} chatEnabled={trial.enabled} phone={callNumber()} />;
+  // The real booking widget for the sample clinic (always Sandbox): the
+  // button opens it, as on a clinic's own website. Off when PUBLIC_SANDBOX_ORG is unset.
+  const sampleOrg = getEnv().PUBLIC_SANDBOX_ORG;
+  const tryRiley = sampleOrg ? (
+    <div className="flex flex-wrap items-center gap-3">
+      <button
+        type="button"
+        data-booking-widget
+        className="inline-flex h-11 items-center gap-2 rounded-full bg-white px-5 text-small font-semibold text-navy-900 shadow-lg transition-transform hover:-translate-y-0.5 motion-reduce:hover:translate-y-0"
+      >
+        <CalendarCheck2 className="size-4" aria-hidden /> Try the booking widget
+      </button>
+      <span className="text-caption text-white/70">Book, chat with Riley or call. Sample clinic, nothing is sent.</span>
+    </div>
+  ) : null;
   return (
     <div className="grid min-h-dvh bg-card lg:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)]">
       <aside className="relative hidden overflow-hidden text-white lg:flex lg:flex-col lg:gap-8 lg:px-12 lg:py-10 xl:px-16">
@@ -74,6 +72,7 @@ export default async function AuthLayout({ children }: { children: React.ReactNo
           </div>
         </div>
       </main>
+      {sampleOrg && <script src="/widget.js" data-clinic={sampleOrg} data-launcher="none" data-mode="modal" async />}
     </div>
   );
 }

@@ -4,6 +4,7 @@
 import { revalidatePath } from "next/cache";
 import {
   ForbiddenError,
+  parseWidgetOrigins,
   validateClinicDetails,
   validateFrontDesk,
   validateHoliday,
@@ -20,6 +21,8 @@ import {
   saveMessaging,
   savePolicies,
   saveWeekHours,
+  saveWidgetSettings,
+  setServiceBookableOnline,
   setReminderRuleEnabled,
   setServiceActive,
   withTransaction,
@@ -28,6 +31,7 @@ import {
 } from "@vetrix/db/runtime";
 import { formValues, toActionError, type ActionResult } from "@/lib/action-result";
 import { requireShell } from "@/lib/session";
+import { forgetWidgetFrameOrigins } from "@/lib/widget-frame";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const RULE_ID = /^[a-z_]{2,60}$/;
@@ -93,5 +97,21 @@ export async function setServiceActiveAction(serviceId: string, active: boolean)
   return save(null, active ? "Service turned on." : "Service turned off.", (tx, ctx) => {
     if (!UUID.test(serviceId)) throw new ValidationError("Choose a service.");
     return setServiceActive(tx, ctx, serviceId, active);
+  });
+}
+
+export async function saveWidgetAction(_: ActionResult | null, form: FormData): Promise<ActionResult> {
+  const enabled = form.get("enabled") === "on";
+  const r = await save(form, enabled ? "Booking widget saved. It's live on the websites listed." : "Booking widget turned off.", (tx, ctx, v) =>
+    saveWidgetSettings(tx, ctx, { enabled, origins: parseWidgetOrigins(String(v.origins ?? "")) }),
+  );
+  if (r.ok) forgetWidgetFrameOrigins((await requireShell()).organization.organization_slug);
+  return r;
+}
+
+export async function setServiceOnlineAction(serviceId: string, bookable: boolean): Promise<ActionResult> {
+  return save(null, bookable ? "Clients can book this online." : "Removed from online booking.", (tx, ctx) => {
+    if (!UUID.test(serviceId)) throw new ValidationError("Choose a service.");
+    return setServiceBookableOnline(tx, ctx, serviceId, bookable);
   });
 }

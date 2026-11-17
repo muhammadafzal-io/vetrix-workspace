@@ -587,3 +587,71 @@ describe("language helpers", () => {
     expect(detectIntent("can I cancel tomorrow")).toBe("cancel");
   });
 });
+
+describe("with a conversation model (OpenAI mode)", () => {
+  /** A stand-in model: reads "the latter" as the second time, and prefixes replies it words. */
+  const fakeAi = (seen: { understand: string[]; rewrite: number }): NonNullable<FrontDeskPort["ai"]> => ({
+    understand: async (req) => {
+      seen.understand.push(req.expecting);
+      return /latter/.test(req.text) && req.expecting.startsWith("Choosing") ? "the second one" : req.text;
+    },
+    rewrite: async (req) => {
+      seen.rewrite += 1;
+      return `Happy to help! ${req.replies.join(" ")}`;
+    },
+  });
+
+  it("lets the model's reading pick the offered time, and words text replies", async () => {
+    const seen = { understand: [] as string[], rewrite: 0 };
+    const { port, log } = fakePort();
+    port.ai = fakeAi(seen);
+    const r = await talk(ctx({ channel: "sms" }), port, sam, ["Max needs his checkup", "the latter please"]);
+    expect(seen.understand.some((e) => e.startsWith("Choosing"))).toBe(true);
+    expect(log.booked[0]!.slot.start).toBe(at("2026-11-18", "14:00"));
+    expect(r.all.every((a) => a.startsWith("Happy to help!"))).toBe(true);
+  });
+
+  it("never words an emergency reply, and keeps triage on the owner's own words", async () => {
+    const seen = { understand: [] as string[], rewrite: 0 };
+    const { port } = fakePort();
+    port.ai = fakeAi(seen);
+    const r = await talk(ctx({ channel: "sms" }), port, sam, ["Max ate rat poison an hour ago"]);
+    expect(seen.rewrite).toBe(0);
+    expect(seen.understand).toHaveLength(0);
+    expect(r.state.triage.level).toBe("emergency");
+    expect(r.last).not.toContain("Happy to help!");
+  });
+
+  it("does not word replies on phone calls", async () => {
+    const seen = { understand: [] as string[], rewrite: 0 };
+    const { port } = fakePort();
+    port.ai = fakeAi(seen);
+    await talk(ctx(), port, sam, ["Max needs his checkup"]);
+    expect(seen.rewrite).toBe(0);
+    expect(seen.understand.length).toBeGreaterThan(0);
+  });
+
+  it("does not book when the owner turns the times down, even if the model says otherwise", async () => {
+    const { port, log } = fakePort();
+    port.ai = { understand: async () => "the first one", rewrite: async () => null };
+    const r = await talk(ctx({ channel: "sms" }), port, sam, ["Max needs his checkup", "neither of those work for me"]);
+    expect(log.booked).toHaveLength(0);
+    expect(r.state.phase).toBe("offering");
+  });
+
+  it("after a no, looks later on the day the owner names", async () => {
+    const { port, log } = fakePort();
+    const r = await talk(ctx({ channel: "sms" }), port, sam, ["Max needs his checkup", "neither, anything later on wednesday?"]);
+    expect(log.booked).toHaveLength(0);
+    expect(log.searches.at(-1)!.after).toBeGreaterThan(at("2026-11-18", "14:00"));
+    expect(r.state.phase).toBe("offering");
+  });
+
+  it("falls back to the script when the model fails", async () => {
+    const { port, log } = fakePort();
+    port.ai = { understand: async () => Promise.reject(new Error("down")), rewrite: async () => Promise.reject(new Error("down")) };
+    const r = await talk(ctx({ channel: "sms" }), port, sam, ["Max needs his checkup", "the second one"]);
+    expect(log.booked).toHaveLength(1);
+    expect(r.all[0]).not.toContain("Happy");
+  });
+});

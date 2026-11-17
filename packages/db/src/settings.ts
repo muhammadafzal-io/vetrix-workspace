@@ -2,6 +2,7 @@
 // and save each section. Values arrive already validated by @vetrix/domain.
 // Every save writes an audit entry with only the fields that changed.
 import {
+  canBookOnline,
   NotFoundError,
   RuleViolationError,
   type ClinicDetails,
@@ -23,7 +24,8 @@ export interface LocationSettings {
   policies: PolicySettings;
   messaging: MessagingSettingsInput;
   reminderRules: { id: string; name: string; enabled: boolean; running: boolean }[];
-  services: { id: string; name: string; category: string; durationMin: number; active: boolean }[];
+  services: { id: string; name: string; category: string; durationMin: number; active: boolean; bookableOnline: boolean; canBookOnline: boolean }[];
+  widget: { enabled: boolean; origins: string[] };
 }
 
 export async function loadSettings(db: SqlClient, locationId: string): Promise<LocationSettings> {
@@ -34,9 +36,9 @@ export async function loadSettings(db: SqlClient, locationId: string): Promise<L
       behaviour: "er_only" | "er_and_book_next" | null; er_name: string | null; er_phone: string | null; er_address: string | null;
       cancellation_window_hours: number | null; cancellation_fee: string | null; surgery_deposit: string | null; refill_turnaround: string | null;
       new_client_policy: string | null; records_release_policy: string | null; recording_retention_months: number | null; telehealth_enabled: boolean | null;
-      quiet_start: string | null; quiet_end: string | null;
+      quiet_start: string | null; quiet_end: string | null; widget_enabled: boolean; widget_origins: string[];
     }>(
-      `SELECT l.name, l.address, l.main_phone, l.website, l.timezone,
+      `SELECT l.name, l.address, l.main_phone, l.website, l.timezone, l.widget_enabled, l.widget_origins,
               ps.ai_persona_name, ps.emergency_transfer_number,
               ah.behaviour, ah.er_name, ah.er_phone, ah.er_address,
               lp.cancellation_window_hours, lp.cancellation_fee, lp.surgery_deposit, lp.refill_turnaround,
@@ -60,8 +62,8 @@ export async function loadSettings(db: SqlClient, locationId: string): Promise<L
       [locationId],
     ),
     db.query<{ pack_rule_id: string; enabled: boolean }>(`SELECT pack_rule_id, enabled FROM reminder_rules WHERE location_id = $1`, [locationId]),
-    db.query<{ id: string; name: string; category: string; duration_min: number; active: boolean }>(
-      `SELECT id, name, category, duration_min, active FROM services WHERE location_id = $1 ORDER BY category, name`,
+    db.query<{ id: string; pack_service_id: string; name: string; category: string; duration_min: number; active: boolean; bookable_online: boolean }>(
+      `SELECT id, pack_service_id, name, category, duration_min, active, bookable_online FROM services WHERE location_id = $1 ORDER BY category, name`,
       [locationId],
     ),
   ]);
@@ -97,7 +99,16 @@ export async function loadSettings(db: SqlClient, locationId: string): Promise<L
     reminderRules: packRules
       .filter((r) => enabled.has(r.id))
       .map((r) => ({ id: r.id, name: r.name, enabled: enabled.get(r.id)!, running: ENGINE_RULES.has(r.id) })),
-    services: services.rows.map((s) => ({ id: s.id, name: s.name, category: s.category, durationMin: s.duration_min, active: s.active })),
+    services: services.rows.map((s) => ({
+      id: s.id,
+      name: s.name,
+      category: s.category,
+      durationMin: s.duration_min,
+      active: s.active,
+      bookableOnline: s.bookable_online,
+      canBookOnline: canBookOnline({ packServiceId: s.pack_service_id, category: s.category }),
+    })),
+    widget: { enabled: l.widget_enabled, origins: l.widget_origins },
   };
 }
 

@@ -12,6 +12,7 @@
 // Compliance: calls open with the recording disclosure; a known caller is
 // verified with their mobile plus a pet's name before any pet or visit
 // detail is discussed, and the pet list is never read out before that.
+import { acceptRewrite, describeExpectation, engineText, mustKeep, type ConversationAI } from "./conversation-ai";
 import { formatPhone, type Species, type TemperamentFlag } from "./clients";
 import { ConflictError } from "./errors";
 import {
@@ -217,6 +218,8 @@ export interface FrontDeskPort {
   sendText(req: { to: string; body: string; templateKey: string; clientId: string | null; patientId?: string | null; appointmentId?: string | null }): Promise<void>;
   transfer(req: { to: string; summary: string }): Promise<{ ok: boolean }>;
   logTriage(req: { match: TriageMatch; actionTaken: string }): Promise<void>;
+  /** A language model that reads and words messages (conversation-ai.ts); absent in Sandbox AI mode. */
+  ai?: ConversationAI;
 }
 
 // ---------- State ----------
@@ -1193,6 +1196,13 @@ class Turn {
         const choice = pickOffered(text, s.offered, this.ctx.timezone);
         if (typeof choice === "number") return this.takeSlot(choice);
         if (choice === "none") {
+          // "Neither, anything later on Thursday?": look on that day, after the times just offered.
+          const asked = parseTimeRequest(text, this.ctx.timezone, this.ctx.now);
+          if (asked && s.offerRounds < 3) {
+            const sameDay = s.offered.filter((o) => localParts(o.start, this.ctx.timezone).date === asked.date).map((o) => o.start);
+            s.prefer = sameDay.length && asked.minutes === null ? { ...asked, after: Math.max(asked.after, ...sameDay) + 60_000 } : asked;
+            return this.offer();
+          }
           if (s.offerRounds >= 3) {
             await this.task("callback", `Find a time: ${this.petName}`, `Caller declined ${s.offerRounds} sets of times for ${s.serviceId}.`);
             this.say("No problem. I've asked the team to call you to find a time that works.");
@@ -1433,8 +1443,30 @@ export async function respond(state: ConversationState, text: string, ctx: Front
   } else {
     for (const m of applied.newMatches) await port.logTriage({ match: m, actionTaken: "noted" });
   }
-  await turn.handle(text, s.phase === "open" || s.phase === "anything_else" ? intentOverride : null);
-  return { state: s, replies: turn.replies };
+  // The model restates the message for the engine's parsers (triage above read the original words).
+  let input = text;
+  if (port.ai) {
+    const { expecting, open, forms } = describeExpectation(s, ctx);
+    const restated = await port.ai.understand({ text, expecting, open, forms, aiName: ctx.aiName, clinicName: ctx.clinicName }).catch(() => null);
+    input = engineText(text, restated, open, forms);
+  }
+  await turn.handle(input, s.phase === "open" || s.phase === "anything_else" ? intentOverride : null);
+  return { state: s, replies: await worded(turn.replies, s, ctx, port, text) };
+}
+
+/**
+ * Text conversations: the model rewrites the scripted reply so it reads
+ * naturally, keeping every time, price, number, link and name. Never on an
+ * emergency, never by voice (yet); the script is used whenever a check fails.
+ */
+async function worded(replies: string[], s: ConversationState, ctx: FrontDeskContext, port: FrontDeskPort, callerText: string): Promise<string[]> {
+  if (!port.ai || ctx.channel !== "sms" || s.triage.level === "emergency" || replies.length === 0) return replies;
+  const names = [ctx.clinicName, ctx.aiName, s.caller.firstName, s.newPet?.name, ...s.pets.map((p) => p.name), ...s.booked.map((b) => b.petName)].filter(
+    (n): n is string => Boolean(n),
+  );
+  const req = { replies, keep: mustKeep(replies, names), aiName: ctx.aiName, clinicName: ctx.clinicName, channel: ctx.channel, callerText };
+  const rewritten = acceptRewrite(req, await port.ai.rewrite(req).catch(() => null));
+  return rewritten ? [rewritten] : replies;
 }
 
 /**

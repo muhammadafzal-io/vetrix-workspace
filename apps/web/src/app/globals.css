@@ -258,3 +258,19 @@
 }
 .vx-drift { animation: vx-drift 24s linear infinite; }
 .vx-drift-slow { animation: vx-drift 38s linear infinite; }
+
+/* Public booking widget: the product's colours. A clinic can pass its own
+   colour from the embed code, which the widget page sets as --widget-brand. */
+.clinic-widget {
+  --primary: var(--widget-brand, #0f766e);
+  --primary-dark: var(--widget-brand-dark, #115e59);
+  --ring: var(--widget-brand, #0f766e);
+}
+@keyframes cw-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+.cw-in { animation: cw-in 0.28s cubic-bezier(0.22, 1, 0.36, 1) both; }
+@media (prefers-reduced-motion: reduce) {
+  .cw-in { animation: none; }
+}

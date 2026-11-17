@@ -189,8 +189,10 @@ function Times({
       setNotice(message ?? null);
       if (r.status === "ok") setDay((d) => (d && r.days.some((x) => x.date === d) ? d : (r.days[0]?.date ?? null)));
     });
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => load(), [pet.patientId]);
+  useEffect(() => {
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pet.patientId]);
 
   const dayLabel = (date: string) => {
     const t = Date.parse(`${date}T12:00:00Z`);

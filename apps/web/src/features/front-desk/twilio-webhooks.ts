@@ -19,7 +19,7 @@ import {
   type OutboundText,
   type TurnOutput,
 } from "@vetrix/db/runtime";
-import { triageClassifier } from "@/lib/ai";
+import { conversationAI, triageClassifier } from "@/lib/ai";
 import { claimBase } from "@/lib/claim";
 import { processIncomingText } from "./incoming-text";
 import { getEnv, getMessagingMode } from "@/lib/env";
@@ -149,7 +149,7 @@ export async function handleCallTurn(request: Request): Promise<Response> {
     }
     return twiml(gather(`${TURN}?silence=${silence + 1}`, say("Are you still there?")) + `<Redirect method="POST">${TURN}?silence=${silence + 1}</Redirect>`);
   }
-  const r = await continueFrontDesk(ctx.clinic, { locationId: ctx.locationId, callId, text: speech.slice(0, MAX_TEXT) }, Date.now(), { classify: triageClassifier(), claimBase: claimBase(ctx.organizationId) });
+  const r = await continueFrontDesk(ctx.clinic, { locationId: ctx.locationId, callId, text: speech.slice(0, MAX_TEXT) }, Date.now(), { classify: triageClassifier(), ai: conversationAI(), claimBase: claimBase(ctx.organizationId) });
   await deliver(ctx, r.outbound);
   return twiml(nextStep(r));
 }

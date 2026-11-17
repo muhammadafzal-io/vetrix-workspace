@@ -189,22 +189,28 @@ async function linkItem(db: SqlClient, token: string, patientId: string, now: nu
   return { ok: true as const, link, item };
 }
 
-/** Free times for one pet's visit, a spread per day over the next three weeks. */
-export async function bookingLinkTimes(db: SqlClient, input: { token: string; patientId: string; now: number }): Promise<LinkTimesResult> {
-  const found = await linkItem(db, input.token, input.patientId, input.now);
-  if (!found.ok) return { status: found.error };
-  const { link, item } = found;
-  if (!item.service_id) return { status: "blocked", message: "Please call us to book this visit." };
-  const today = localParts(input.now, link.timezone).date;
+export type OnlineTimesResult = { status: "ok"; days: { date: string; times: LinkTime[] }[] } | { status: "blocked"; message: string } | { status: "invalid" };
+
+const NEEDS_CHECK = "This visit needs a quick check by our team first. Please call us to book.";
+
+/**
+ * Free times for one pet's visit, a spread per day over the next three weeks.
+ * Shared by reminder links and the booking widget. Strict, as for the AI front
+ * desk: anything that needs a staff decision is booked by phone.
+ */
+export async function onlineTimes(
+  db: SqlClient,
+  input: { locationId: string; timezone: string; serviceId: string; patientId: string; now: number },
+): Promise<OnlineTimesResult> {
+  const today = localParts(input.now, input.timezone).date;
   const [service, patient, data] = await Promise.all([
-    loadService(db, link.location_id, item.service_id),
-    loadPatientForBooking(db, link.location_id, input.patientId),
-    loadSchedulingData(db, link.location_id, today, ONLINE_BOOKING.searchDays),
+    loadService(db, input.locationId, input.serviceId),
+    loadPatientForBooking(db, input.locationId, input.patientId),
+    loadSchedulingData(db, input.locationId, today, ONLINE_BOOKING.searchDays),
   ]);
   if (patient.status !== "active") return { status: "invalid" };
-  // Strict, as for Riley: anything that needs a staff decision is booked by phone.
   const e = checkEligibility(service, patient, today);
-  if (e.blocking.length || e.warnings.length) return { status: "blocked", message: "This visit needs a quick check by our team first. Please call us to book." };
+  if (e.blocking.length || e.warnings.length) return { status: "blocked", message: NEEDS_CHECK };
   const slots = findSlots(data, {
     service,
     patient,
@@ -217,14 +223,25 @@ export async function bookingLinkTimes(db: SqlClient, input: { token: string; pa
     status: "ok",
     days: spreadByDay(
       slots.map((s) => ({ start: s.start, providerId: s.providerId, providerName: names.get(s.providerId) ?? "" })),
-      link.timezone,
+      input.timezone,
     ),
   };
 }
 
-export type LinkBookResult =
+/** Free times for one pet's visit from a reminder link. */
+export async function bookingLinkTimes(db: SqlClient, input: { token: string; patientId: string; now: number }): Promise<LinkTimesResult> {
+  const found = await linkItem(db, input.token, input.patientId, input.now);
+  if (!found.ok) return { status: found.error };
+  const { link, item } = found;
+  if (!item.service_id) return { status: "blocked", message: "Please call us to book this visit." };
+  return onlineTimes(db, { locationId: link.location_id, timezone: link.timezone, serviceId: item.service_id, patientId: input.patientId, now: input.now });
+}
+
+export type OnlineBookResult =
   | { status: "booked"; petName: string; serviceName: string; start: Date; providerName: string; timezone: string; confirmation: "sms" | "email" | null; appointmentId: string }
-  | { status: "taken" | "invalid" | "expired" | "already_booked" | "blocked"; message?: string };
+  | { status: "taken" | "already_booked" | "blocked"; message?: string };
+
+export type LinkBookResult = OnlineBookResult | { status: "invalid" | "expired"; message?: string };
 
 const when = (start: number, tz: string) => {
   const date = new Intl.DateTimeFormat("en-US", { weekday: "long", month: "long", day: "numeric", timeZone: tz }).format(start);
@@ -232,42 +249,54 @@ const when = (start: number, tz: string) => {
   return { date, time };
 };
 
-/** Books the chosen time and records a confirmation (text, else email). Call inside a transaction. */
-export async function bookFromLink(
+/**
+ * A client books a time themselves (reminder link or widget): strict rules,
+ * a confirmation (text, else email) and an audit entry. Call inside a transaction.
+ */
+export async function bookOnline(
   db: SqlClient,
-  input: { token: string; patientId: string; start: number; providerId: string; now: number; sandbox: boolean },
-): Promise<LinkBookResult> {
-  const found = await linkItem(db, input.token, input.patientId, input.now, true);
-  if (!found.ok) return { status: found.error };
-  const { link, item } = found;
-  if (!item.service_id) return { status: "blocked", message: "Please call us to book this visit." };
+  input: {
+    locationId: string;
+    clinicName: string;
+    timezone: string;
+    clientId: string;
+    patientId: string;
+    serviceId: string;
+    start: number;
+    providerId: string;
+    now: number;
+    sandbox: boolean;
+    /** The appointment this link already booked, if any. */
+    linkedAppointmentId?: string | null;
+    via: "link" | "widget";
+  },
+): Promise<OnlineBookResult> {
   const already = await db.query(
     `SELECT 1 FROM appointments WHERE patient_id = $1 AND status IN ('requested', 'confirmed') AND start_at > $2 AND (id = $3 OR service_id = $4)`,
-    [input.patientId, new Date(input.now), item.appointment_id, item.service_id],
+    [input.patientId, new Date(input.now), input.linkedAppointmentId ?? null, input.serviceId],
   );
   if (already.rows[0]) return { status: "already_booked" };
   if (input.start < input.now + ONLINE_BOOKING.leadMinutes * 60_000) return { status: "taken" };
 
-  const today = localParts(input.now, link.timezone).date;
+  const today = localParts(input.now, input.timezone).date;
   let booked;
   try {
     booked = await bookAppointment(db, {
-      locationId: link.location_id,
+      locationId: input.locationId,
       patientId: input.patientId,
-      serviceId: item.service_id,
+      serviceId: input.serviceId,
       start: input.start,
       providerId: input.providerId,
       bookedBy: "web",
-      actor: { type: "client", id: link.client_id },
+      actor: { type: "client", id: input.clientId },
       today,
       strict: true,
     });
   } catch (error) {
     if (error instanceof ConflictError) return { status: "taken" };
-    if (error instanceof RuleViolationError) return { status: "blocked", message: "This visit needs a quick check by our team first. Please call us to book." };
+    if (error instanceof RuleViolationError) return { status: "blocked", message: NEEDS_CHECK };
     throw error;
   }
-  await db.query(`UPDATE booking_link_items SET appointment_id = $3 WHERE link_id = $1 AND patient_id = $2`, [link.id, input.patientId, booked.appointmentId]);
 
   const { rows } = await db.query<{ pet: string; service: string; provider: string; sms_consent: boolean; email: string | null; dnc: boolean }>(
     `SELECT p.name AS pet, s.name AS service, pr.display_name AS provider, c.sms_consent, c.email,
@@ -277,25 +306,26 @@ export async function bookFromLink(
     [booked.appointmentId],
   );
   const a = rows[0]!;
-  const w = when(booked.slot.start, link.timezone);
+  const w = when(booked.slot.start, input.timezone);
   const line = `${a.pet} is booked for ${a.service.toLowerCase()} on ${w.date} at ${w.time}`;
   const confirmation: "sms" | "email" | null = a.dnc ? null : a.sms_consent ? "sms" : a.email ? "email" : null;
   if (confirmation) {
     await db.query(
       `INSERT INTO messages (location_id, client_id, patient_id, appointment_id, channel, template_key, subject, body, status, sent_at)
        VALUES ($1, $2, $3, $4, $5, 'appointment_confirmation', $6, $7, $8, $9)`,
-      [link.location_id, link.client_id, input.patientId, booked.appointmentId, confirmation,
-       confirmation === "email" ? `${a.pet}'s appointment at ${link.clinic}` : null,
-       fillScript(SCRIPTS.confirmationSms, { clinic_name: link.clinic, visits: line }),
+      [input.locationId, input.clientId, input.patientId, booked.appointmentId, confirmation,
+       confirmation === "email" ? `${a.pet}'s appointment at ${input.clinicName}` : null,
+       fillScript(SCRIPTS.confirmationSms, { clinic_name: input.clinicName, visits: line }),
        input.sandbox ? "simulated" : "queued", input.sandbox ? new Date() : null],
     );
   }
   await writeAudit(db, {
-    locationId: link.location_id,
-    actor: { type: "client", id: link.client_id },
+    locationId: input.locationId,
+    actor: { type: "client", id: input.clientId },
     action: "appointment.booked_online",
     entityType: "appointment",
     entityId: booked.appointmentId,
+    changes: { via: input.via },
   });
   return {
     status: "booked",
@@ -303,10 +333,39 @@ export async function bookFromLink(
     serviceName: a.service,
     start: new Date(booked.slot.start),
     providerName: a.provider,
-    timezone: link.timezone,
+    timezone: input.timezone,
     confirmation,
     appointmentId: booked.appointmentId,
   };
+}
+
+/** Books the chosen time from a reminder link. Call inside a transaction. */
+export async function bookFromLink(
+  db: SqlClient,
+  input: { token: string; patientId: string; start: number; providerId: string; now: number; sandbox: boolean },
+): Promise<LinkBookResult> {
+  const found = await linkItem(db, input.token, input.patientId, input.now, true);
+  if (!found.ok) return { status: found.error };
+  const { link, item } = found;
+  if (!item.service_id) return { status: "blocked", message: "Please call us to book this visit." };
+  const r = await bookOnline(db, {
+    locationId: link.location_id,
+    clinicName: link.clinic,
+    timezone: link.timezone,
+    clientId: link.client_id,
+    patientId: input.patientId,
+    serviceId: item.service_id,
+    start: input.start,
+    providerId: input.providerId,
+    now: input.now,
+    sandbox: input.sandbox,
+    linkedAppointmentId: item.appointment_id,
+    via: "link",
+  });
+  if (r.status === "booked") {
+    await db.query(`UPDATE booking_link_items SET appointment_id = $3 WHERE link_id = $1 AND patient_id = $2`, [link.id, input.patientId, r.appointmentId]);
+  }
+  return r;
 }
 
 /** The location and clinic name behind a link (for sending its messages). */

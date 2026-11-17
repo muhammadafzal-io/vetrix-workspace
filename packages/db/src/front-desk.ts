@@ -35,6 +35,7 @@ import {
   type Species,
   type TriageAssessment,
   type TriageLevel,
+  type ConversationAI,
 } from "@vetrix/domain";
 import { getVeterinaryPack } from "@vetrix/pack";
 import { bookAppointment, cancelAppointment, loadPatientForBooking, loadSchedulingData, loadService, rescheduleAppointment } from "./booking";
@@ -174,6 +175,8 @@ export type TriageClassifier = (text: string, petNames: string[]) => Promise<Tri
 
 export interface FrontDeskOptions {
   classify?: TriageClassifier;
+  /** A language model that reads and words messages; without it the scripted sandbox AI answers. */
+  ai?: ConversationAI;
   /** Base of waitlist claim links ("https://…/claim/<organization id>"). Without it, freed times are not offered. */
   claimBase?: string;
 }
@@ -201,7 +204,7 @@ const newNotes = (): PortNotes => ({ notes: [], outbound: [], transferTo: null }
 
 function createPort(
   db: SqlClient,
-  input: { locationId: string; callId: string; setup: Setup; sandbox: boolean; channel: "voice" | "sms"; classify?: TriageClassifier; claimBase?: string },
+  input: { locationId: string; callId: string; setup: Setup; sandbox: boolean; channel: CallChannel; classify?: TriageClassifier; claimBase?: string; ai?: ConversationAI },
   out: PortNotes,
 ): FrontDeskPort {
   const { locationId, callId, setup, sandbox } = input;
@@ -284,6 +287,7 @@ function createPort(
   };
 
   return {
+    ai: input.ai,
     async classify(text, petNames) {
       return (input.classify ?? sandboxClassifier)(text, petNames);
     },
@@ -507,9 +511,15 @@ function createPort(
 
 // ---------- Conversations ----------
 
+/** Where a conversation happens: a phone call, a text thread, or the booking widget's chat. */
+export type CallChannel = "voice" | "sms" | "web";
+
+/** The widget's chat behaves like a text thread. */
+const talkChannel = (c: CallChannel): "voice" | "sms" => (c === "voice" ? "voice" : "sms");
+
 export interface StartInput {
   locationId: string;
-  channel: "voice" | "sms";
+  channel: CallChannel;
   callerNumber: string | null;
   sandbox: boolean;
   /** Twilio's CallSid for phone calls, so later webhooks find the conversation. */
@@ -545,7 +555,7 @@ export async function startFrontDesk(pool: TransactionPool, input: StartInput, n
   return withTransaction(pool, async (db) => {
     const setup = await loadSetup(db, input.locationId, now);
     const caller = mobile ? await findCaller(db, input.locationId, mobile, setup.today) : null;
-    const ctx: FrontDeskContext = { ...setup.ctx, callerNumber: mobile, channel: input.channel };
+    const ctx: FrontDeskContext = { ...setup.ctx, callerNumber: mobile, channel: talkChannel(input.channel) };
     const { state, replies } = startConversation(ctx, caller);
     const { rows } = await db.query<{ id: string }>(
       `INSERT INTO calls (location_id, client_id, direction, caller_number, after_hours, started_at, channel, sandbox, state, summary, provider_call_id)
@@ -591,16 +601,16 @@ async function runTurn(
   systemNote?: string,
 ): Promise<TurnOutput> {
   return withTransaction(pool, async (db) => {
-    const { rows } = await db.query<{ state: ConversationState; channel: "voice" | "sms"; caller_number: string | null; sandbox: boolean }>(
+    const { rows } = await db.query<{ state: ConversationState; channel: CallChannel; caller_number: string | null; sandbox: boolean }>(
       `SELECT state, channel, caller_number, sandbox FROM calls WHERE id = $1 AND location_id = $2 FOR UPDATE`,
       [input.callId, input.locationId],
     );
     const call = rows[0];
     if (!call) throw new NotFoundError("Conversation", input.callId);
     const setup = await loadSetup(db, input.locationId, now);
-    const ctx: FrontDeskContext = { ...setup.ctx, callerNumber: call.caller_number, channel: call.channel };
+    const ctx: FrontDeskContext = { ...setup.ctx, callerNumber: call.caller_number, channel: talkChannel(call.channel) };
     const out = newNotes();
-    const port = createPort(db, { locationId: input.locationId, callId: input.callId, setup, sandbox: call.sandbox, channel: call.channel, classify: options.classify, claimBase: options.claimBase }, out);
+    const port = createPort(db, { locationId: input.locationId, callId: input.callId, setup, sandbox: call.sandbox, channel: call.channel, classify: options.classify, claimBase: options.claimBase, ai: options.ai }, out);
     const { state, replies } = await step(call.state, ctx, port);
     const ended = state.phase === "ended" && !out.transferTo;
     await addTurns(db, input.callId, [
@@ -670,7 +680,7 @@ export async function endFrontDesk(pool: TransactionPool, input: { locationId: s
 
 export interface CallListItem {
   id: string;
-  channel: "voice" | "sms";
+  channel: CallChannel;
   sandbox: boolean;
   caller_number: string | null;
   client_name: string | null;

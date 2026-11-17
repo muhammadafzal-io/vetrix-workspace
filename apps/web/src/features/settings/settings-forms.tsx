@@ -1,8 +1,13 @@
 "use client";
 
 import { useActionState, useEffect, useState, useTransition } from "react";
+import * as Dialog from "@radix-ui/react-dialog";
 import {
+  AppWindow,
   BellRing,
+  Copy,
+  ExternalLink,
+  Eye,
   Bot,
   Building2,
   CalendarOff,
@@ -33,7 +38,9 @@ import {
   saveMessagingAction,
   savePoliciesAction,
   setReminderRuleAction,
+  saveWidgetAction,
   setServiceActiveAction,
+  setServiceOnlineAction,
 } from "./actions";
 
 type FormAction = (state: ActionResult | null, form: FormData) => Promise<ActionResult>;
@@ -50,6 +57,7 @@ export const SECTIONS: { id: string; label: string; icon: LucideIcon }[] = [
   { id: "messaging", label: "Quiet hours", icon: MoonStar },
   { id: "reminders", label: "Reminders", icon: BellRing },
   { id: "services", label: "Services", icon: Stethoscope },
+  { id: "widget", label: "Booking widget", icon: AppWindow },
 ];
 
 /** Section list: a sticky side menu on large screens, scrolling chips on small ones. Highlights the section in view. */
@@ -551,9 +559,15 @@ export function RemindersCard({ rules }: { rules: { id: string; name: string; en
   );
 }
 
-export function ServicesCard({ groups }: { groups: { label: string; services: { id: string; name: string; durationMin: number; active: boolean }[] }[] }) {
+type ServiceRow = { id: string; name: string; durationMin: number; active: boolean; bookableOnline: boolean; canBookOnline: boolean };
+
+export function ServicesCard({ groups }: { groups: { label: string; services: ServiceRow[] }[] }) {
   return (
-    <Card id="services" title="Services" description="Turn off a service the clinic doesn't offer. Riley and staff can't book it; visits already booked stay.">
+    <Card
+      id="services"
+      title="Services"
+      description="Offered: turn off a service the clinic doesn't do (Riley and staff can't book it). Online: clients can book it themselves in the booking widget. Surgery, euthanasia and sick visits always go through Riley or the team."
+    >
       {groups.map((g) => (
         <div key={g.label} className="grid gap-2">
           <h3 className="flex items-center justify-between text-caption font-semibold uppercase tracking-wide text-muted-foreground">
@@ -564,12 +578,160 @@ export function ServicesCard({ groups }: { groups: { label: string; services: { 
           </h3>
           <ul className="grid gap-2 sm:grid-cols-2">
             {g.services.map((x) => (
-              <ToggleRow key={x.id} kind="service" id={x.id} label={x.name} detail={x.durationMin ? `${x.durationMin} min` : undefined} on={x.active} />
+              <ServiceToggles key={x.id} service={x} />
             ))}
           </ul>
         </div>
       ))}
     </Card>
+  );
+}
+
+function ServiceToggles({ service: x }: { service: ServiceRow }) {
+  const [active, setActive] = useState(x.active);
+  const [online, setOnline] = useState(x.bookableOnline);
+  const [pending, start] = useTransition();
+  const [error, setError] = useState<string | null>(null);
+  const flip = (which: "active" | "online", next: boolean) => {
+    const set = which === "active" ? setActive : setOnline;
+    set(next);
+    start(async () => {
+      const r = which === "active" ? await setServiceActiveAction(x.id, next) : await setServiceOnlineAction(x.id, next);
+      if (!r.ok) {
+        set(!next);
+        setError(r.error);
+      } else setError(null);
+    });
+  };
+  return (
+    <li className="flex items-center gap-3 rounded-lg border px-3 py-2.5">
+      <span className="grid min-w-0 flex-1 gap-0.5">
+        <span className="truncate text-small font-medium">{x.name}</span>
+        <span className="text-caption text-muted-foreground">{[x.durationMin ? `${x.durationMin} min` : null, !x.canBookOnline ? "Not online" : null].filter(Boolean).join(" · ")}</span>
+        {error && <span className="text-caption text-destructive">{error}</span>}
+      </span>
+      {pending && <Loader2 className="size-4 animate-spin text-muted-foreground" aria-hidden />}
+      <span className="grid justify-items-center gap-1">
+        <span className="text-[11px] leading-none text-muted-foreground" aria-hidden>
+          Offered
+        </span>
+        <Switch aria-label={`${x.name}: offered`} checked={active} disabled={pending} onChange={(e) => flip("active", e.currentTarget.checked)} />
+      </span>
+      <span className="grid justify-items-center gap-1">
+        <span className="text-[11px] leading-none text-muted-foreground" aria-hidden>
+          Online
+        </span>
+        <Switch
+          aria-label={`${x.name}: clients can book online`}
+          checked={online && active}
+          disabled={pending || !active || !x.canBookOnline}
+          onChange={(e) => flip("online", e.currentTarget.checked)}
+        />
+      </span>
+    </li>
+  );
+}
+
+// ---------- Booking widget ----------
+
+/** The live widget in a pop-up, as on a clinic's website. Its close button works too. */
+function WidgetPreview({ url, disabled }: { url: string; disabled: boolean }) {
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    if (!open) return;
+    const origin = new URL(url, window.location.href).origin;
+    const onMessage = (e: MessageEvent) => {
+      if (e.origin === origin && (e.data as { type?: string } | null)?.type === "booking-widget:close") setOpen(false);
+    };
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, [open, url]);
+  return (
+    <Dialog.Root open={open} onOpenChange={setOpen}>
+      <Dialog.Trigger asChild>
+        <Button type="button" variant="outline" size="sm" disabled={disabled}>
+          <Eye aria-hidden /> Preview
+        </Button>
+      </Dialog.Trigger>
+      <Dialog.Portal>
+        <Dialog.Overlay className="fixed inset-0 z-50 bg-navy-900/55 backdrop-blur-sm" />
+        <Dialog.Content className="fixed left-1/2 top-1/2 z-50 h-[min(720px,calc(100dvh-3rem))] w-[min(420px,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-2xl bg-card shadow-2xl focus:outline-none">
+          <Dialog.Title className="sr-only">Booking widget preview</Dialog.Title>
+          <Dialog.Description className="sr-only">The booking widget as clients see it on your website.</Dialog.Description>
+          {/* A new frame each time, so the preview always starts at the beginning. */}
+          <iframe src={url} title="Booking widget preview" className="size-full border-0" />
+        </Dialog.Content>
+      </Dialog.Portal>
+    </Dialog.Root>
+  );
+}
+
+export function WidgetForm({ saved, hostedUrl, scriptUrl, slug }: { saved: { enabled: boolean; origins: string[] }; hostedUrl: string; scriptUrl: string; slug: string }) {
+  const snippet = `<script src="${scriptUrl}" data-clinic="${slug}" async></script>`;
+  const [copied, setCopied] = useState<string | null>(null);
+  const copy = (what: string, text: string) => {
+    void navigator.clipboard?.writeText(text).then(() => {
+      setCopied(what);
+      setTimeout(() => setCopied(null), 2000);
+    });
+  };
+  return (
+    <FormCard
+      id="widget"
+      title="Booking widget"
+      description="A “Book a visit” button for your website. Clients confirm their mobile with a texted code, then book a routine visit, chat with Riley, or call."
+      action={saveWidgetAction}
+      fields={["origins"]}
+    >
+      {(d, state) => (
+        <>
+          <label className="flex cursor-pointer items-center justify-between gap-4 rounded-lg border px-4 py-3 hover:bg-muted/50">
+            <span className="grid gap-0.5">
+              <span className="text-small font-medium">Online booking is on</span>
+              <span className="text-caption text-muted-foreground">Off: the button and link say to call instead.</span>
+            </span>
+            <Switch name="enabled" defaultChecked={d.on("enabled", saved.enabled)} aria-label="Online booking is on" />
+          </label>
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg bg-muted/50 px-4 py-3">
+            <span className="grid gap-0.5">
+              <span className="text-small font-medium">See it as clients do</span>
+              <span className="text-caption text-muted-foreground">
+                {saved.enabled ? "The live widget with your saved settings. Bookings made in it are real." : "Turn online booking on and save to try it."}
+              </span>
+            </span>
+            <WidgetPreview url={`${hostedUrl}?embed=1`} disabled={!saved.enabled} />
+          </div>
+          <FormField label="Your websites" hint="One per line, e.g. happypawsvet.com. Only these sites can show the widget." error={fieldError(state, "origins")}>
+            {(p) => (
+              <Textarea {...p} name="origins" rows={3} className="max-w-xl font-mono text-small" defaultValue={d.text("origins", saved.origins.join("\n"))} placeholder="happypawsvet.com" />
+            )}
+          </FormField>
+          <div className="grid gap-2">
+            <p className="text-small font-medium">Add to your website</p>
+            <p className="text-caption text-muted-foreground">Paste this before the closing &lt;/body&gt; tag. Any link with data-booking-widget also opens it.</p>
+            <div className="flex max-w-2xl items-start gap-2">
+              <code className="min-w-0 flex-1 overflow-x-auto whitespace-pre rounded-md border bg-muted/50 px-3 py-2 font-mono text-caption">{snippet}</code>
+              <Button type="button" variant="outline" size="sm" onClick={() => copy("code", snippet)}>
+                <Copy aria-hidden /> {copied === "code" ? "Copied" : "Copy"}
+              </Button>
+            </div>
+          </div>
+          <div className="grid gap-2">
+            <p className="text-small font-medium">Booking link</p>
+            <p className="text-caption text-muted-foreground">For Google Business Profile, Facebook, Instagram and emails.</p>
+            <div className="flex max-w-2xl flex-wrap items-center gap-2">
+              <code className="min-w-0 flex-1 truncate rounded-md border bg-muted/50 px-3 py-2 font-mono text-caption">{hostedUrl}</code>
+              <Button type="button" variant="outline" size="sm" onClick={() => copy("link", hostedUrl)}>
+                <Copy aria-hidden /> {copied === "link" ? "Copied" : "Copy"}
+              </Button>
+              <a href={hostedUrl} target="_blank" rel="noreferrer" className="inline-flex h-8 items-center gap-1.5 rounded-sm px-3 text-small font-medium text-primary hover:bg-muted">
+                <ExternalLink className="size-4" aria-hidden /> Open
+              </a>
+            </div>
+          </div>
+        </>
+      )}
+    </FormCard>
   );
 }
 

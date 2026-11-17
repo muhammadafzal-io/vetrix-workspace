@@ -10,7 +10,7 @@ import { revalidatePath } from "next/cache";
 import { ForbiddenError, ValidationError, type Permission, type TriageLevel } from "@vetrix/domain";
 import { continueFrontDesk, endFrontDesk, setTaskStatus, startFrontDesk, withTransaction, type Actor } from "@vetrix/db/runtime";
 import { toActionError, type ActionResult } from "@/lib/action-result";
-import { triageClassifier } from "@/lib/ai";
+import { conversationAI, triageClassifier } from "@/lib/ai";
 import { claimBase } from "@/lib/claim";
 import { requireShell } from "@/lib/session";
 
@@ -52,7 +52,7 @@ export async function sendSandboxAction(callId: string, text: string): Promise<C
     const { shell } = await allowed(...CONSOLE);
     if (!UUID.test(callId)) throw new ValidationError("Start a conversation first.");
     if (typeof text !== "string") throw new ValidationError("Type a message.");
-    const r = await continueFrontDesk(shell.clinic, { locationId: shell.location.id, callId, text }, Date.now(), { classify: triageClassifier(), claimBase: claimBase(shell.organization.organization_id) });
+    const r = await continueFrontDesk(shell.clinic, { locationId: shell.location.id, callId, text }, Date.now(), { classify: triageClassifier(), ai: conversationAI(), claimBase: claimBase(shell.organization.organization_id) });
     return { ok: true, ...r };
   } catch (error) {
     return failure(error);

@@ -3,6 +3,7 @@ import { formatPhone } from "@vetrix/domain";
 import { loadSettings } from "@vetrix/db/runtime";
 import { PageHeader } from "@/components/patterns/page-header";
 import { requirePage } from "@/features/clients/access";
+import { getEnv } from "@/lib/env";
 import {
   DetailsForm,
   FrontDeskForm,
@@ -13,6 +14,7 @@ import {
   RemindersCard,
   ServicesCard,
   SettingsNav,
+  WidgetForm,
 } from "@/features/settings/settings-forms";
 
 export const metadata: Metadata = { title: "Settings · Vetrix" };
@@ -40,6 +42,8 @@ function usTimeZones(current: string): string[] {
 export default async function SettingsPage() {
   const shell = await requirePage("settings.manage");
   const s = await loadSettings(shell.clinic, shell.location.id);
+  const appUrl = getEnv().APP_URL.replace(/\/$/, "");
+  const slug = shell.organization.organization_slug;
   const groups = [...new Set(s.services.map((x) => x.category))].map((c) => ({
     label: CATEGORY[c] ?? c.replace(/_/g, " "),
     services: s.services.filter((x) => x.category === c),
@@ -61,6 +65,7 @@ export default async function SettingsPage() {
           <MessagingForm saved={s.messaging} timezone={s.details.timezone} />
           <RemindersCard rules={s.reminderRules} />
           <ServicesCard groups={groups} />
+          <WidgetForm saved={s.widget} slug={slug} hostedUrl={`${appUrl}/w/${slug}`} scriptUrl={`${appUrl}/widget.js`} />
         </div>
       </div>
     </>

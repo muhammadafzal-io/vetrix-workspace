@@ -6,6 +6,7 @@
 //   end of quiet hours, so texts are not held back for a whole day;
 // - fasting_check: 19:00, a text to clients with a fasting procedure tomorrow;
 // - fasting_no_reply: 20:00, a staff task to verify fasting at drop-off.
+import { pruneWidget } from "./widget";
 import { fillScript, isQuietHours, localParts } from "@vetrix/domain";
 import { getVeterinaryPack } from "@vetrix/pack";
 import type { Actor } from "./clients";
@@ -128,6 +129,12 @@ export async function runDueJobs(db: SqlClient, input: { locationId: string; now
   if (wl.expired || wl.calls) {
     result.ran.push("waitlist_follow_up");
     result.waitlist = wl;
+  }
+
+  // 5. Once a day: remove used booking-widget codes and old widget sessions.
+  if (await claim(db, input.locationId, "widget_cleanup", here.date)) {
+    await pruneWidget(db, input.now);
+    result.ran.push("widget_cleanup");
   }
   return result;
 }

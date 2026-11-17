@@ -47,14 +47,16 @@ export const envSchema = z
     OPENAI_TEXT_MODEL: optional,
     /** Realtime speech model for live calls (voice service). */
     OPENAI_REALTIME_MODEL: optional,
-    // Public home page. The "Call Riley" button dials this number (the
-    // clinic's Twilio number, any format); without it the button says the
-    // phone line is coming soon.
+    // Sign-in page: "Call us" in the sample clinic's booking widget dials this
+    // number (the clinic's Twilio number, any format).
     PUBLIC_CALL_NUMBER: optional,
-    // "Try Riley in your browser" runs against this organization's clinic
-    // database (slug). It must be a sample clinic: visitors create sample
-    // clients and bookings there. Unset: the browser trial is off.
+    // The booking widget on the sign-in page runs against this organization
+    // (slug), always in Sandbox. It must be a sample clinic: visitors create
+    // sample clients and bookings there. Unset: the widget is not shown.
     PUBLIC_SANDBOX_ORG: optional,
+    // The website's "Talk to us" and footer contact link (an email address).
+    // Unset: those links are hidden.
+    PUBLIC_CONTACT_EMAIL: optional,
     // Bearer token Cloud Scheduler sends to /api/jobs/tick. Required in production.
     JOBS_SECRET: optional,
     SENTRY_DSN: optional,

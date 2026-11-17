@@ -19,3 +19,5 @@ export * from "./replies";
 export * from "./waitlist";
 export * from "./settings";
 export * from "./online-booking";
+export * from "./widget";
+export * from "./conversation-ai";

@@ -9,7 +9,7 @@ import { PageHeader } from "@/components/patterns/page-header";
 import { Badge } from "@/components/ui/badge";
 import { buttonVariants } from "@/components/ui/button";
 import { assertId, orNotFound, requirePage } from "@/features/clients/access";
-import { formatDuration, formatWhen, SandboxBadge, TASK_TYPE_LABEL, TRIAGE_ACTION_LABEL, TriageBadge } from "@/features/front-desk/labels";
+import { CHANNEL_LABEL, formatDuration, formatWhen, SandboxBadge, TASK_TYPE_LABEL, TRIAGE_ACTION_LABEL, TriageBadge } from "@/features/front-desk/labels";
 import { cn } from "@/lib/utils";
 
 export const metadata: Metadata = { title: "Conversation · Vetrix" };
@@ -40,7 +40,7 @@ export default async function CallPage({ params }: { params: Promise<{ id: strin
         title={who}
         description={
           <span className="flex flex-wrap items-center gap-2">
-            {call.channel === "voice" ? "Phone call" : "Text conversation"} · {formatWhen(call.started_at, tz)}
+            {CHANNEL_LABEL[call.channel]} · {formatWhen(call.started_at, tz)}
             {call.after_hours && " · after hours"}
           </span>
         }

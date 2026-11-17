@@ -15,7 +15,7 @@ import {
   type OutboundText,
 } from "@vetrix/db/runtime";
 import { formatPhone } from "@vetrix/domain";
-import { triageClassifier } from "@/lib/ai";
+import { conversationAI, triageClassifier } from "@/lib/ai";
 import { claimBase } from "@/lib/claim";
 import type { ClinicPool } from "@/lib/staff-context";
 
@@ -71,7 +71,7 @@ export async function processIncomingText(input: { clinic: ClinicPool; organizat
 
   let callId = await findOpenTextThread(clinic, locationId, mobile);
   if (!callId) callId = (await startFrontDesk(clinic, { locationId, channel: "sms", callerNumber: mobile, sandbox })).callId;
-  const r = await continueFrontDesk(clinic, { locationId, callId, text }, Date.now(), { classify: triageClassifier(), claimBase: claimBase(input.organizationId) });
+  const r = await continueFrontDesk(clinic, { locationId, callId, text }, Date.now(), { classify: triageClassifier(), ai: conversationAI(), claimBase: claimBase(input.organizationId) });
   const forCaller = r.outbound.filter((o) => o.to === mobile);
   return {
     texts: [r.replies.join(" "), ...forCaller.map((o) => o.body)].filter(Boolean),
