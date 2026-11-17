@@ -2,7 +2,7 @@
 // each result. Used by reminder runs and scheduled jobs.
 import "server-only";
 import { numberForLocation, setMessageResult } from "@vetrix/db/runtime";
-import { sendEmail } from "./email";
+import { mailProvider, sendEmail } from "./email";
 import { getEnv } from "./env";
 import { logger } from "./logger";
 import type { ClinicPool } from "./staff-context";
@@ -37,11 +37,11 @@ export async function deliverQueued(input: { clinic: ClinicPool; organizationId:
         ok = r.ok;
         id = r.sid;
         if (!r.ok) error = `Twilio refused the text (${r.status}).`;
-      } else if (m.channel === "email" && env.SENDGRID_API_KEY && env.EMAIL_FROM && c?.email) {
-        const r = await sendEmail({ apiKey: env.SENDGRID_API_KEY, from: env.EMAIL_FROM, fromName: input.clinicName }, { to: c.email, subject: `A reminder from ${input.clinicName}`, text: m.body });
+      } else if (m.channel === "email" && mailProvider(env) && env.EMAIL_FROM && c?.email) {
+        const r = await sendEmail({ provider: mailProvider(env)!, from: env.EMAIL_FROM, fromName: input.clinicName }, { to: c.email, subject: `A reminder from ${input.clinicName}`, text: m.body });
         ok = r.ok;
         id = r.id;
-        if (!r.ok) error = `SendGrid refused the email (${r.status}).`;
+        if (!r.ok) error = `The email provider refused the email (${r.status}).`;
       } else {
         error = m.channel === "ai_call" ? "Reminder calls need the voice service." : "Sending is not set up for this channel.";
       }

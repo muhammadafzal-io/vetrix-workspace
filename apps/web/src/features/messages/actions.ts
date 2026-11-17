@@ -7,7 +7,7 @@ import { revalidatePath } from "next/cache";
 import { ForbiddenError, isQuietHours, localParts, RuleViolationError, validateOutbound, ValidationError } from "@vetrix/domain";
 import { getClientThread, messagingSettings, numberForLocation, recordOutbound, setMessageResult, withTransaction, type Actor } from "@vetrix/db/runtime";
 import { formValues, toActionError, type ActionResult } from "@/lib/action-result";
-import { sendEmail } from "@/lib/email";
+import { mailProvider, sendEmail } from "@/lib/email";
 import { getEnv, getMessagingMode } from "@/lib/env";
 import { logger } from "@/lib/logger";
 import { requireShell } from "@/lib/session";
@@ -54,13 +54,14 @@ export async function sendMessageAction(clientId: string, _: ActionResult | null
             providerId = r.sid;
             if (!r.ok) error = `Twilio refused the text (${r.status}).`;
           }
-        } else if (!env.SENDGRID_API_KEY || !env.EMAIL_FROM) {
-          error = "Email is not set up (SendGrid).";
+        } else if (!mailProvider(env) || !env.EMAIL_FROM) {
+          error = "Email is not set up (add RESEND_API_KEY and EMAIL_FROM).";
         } else {
-          const r = await sendEmail({ apiKey: env.SENDGRID_API_KEY, from: env.EMAIL_FROM, fromName: settings.clinicName }, { to: client.email!, subject: msg.subject!, text: msg.body });
+          const provider = mailProvider(env)!;
+          const r = await sendEmail({ provider, from: env.EMAIL_FROM, fromName: settings.clinicName }, { to: client.email!, subject: msg.subject!, text: msg.body });
           ok = r.ok;
           providerId = r.id;
-          if (!r.ok) error = `SendGrid refused the email (${r.status}).`;
+          if (!r.ok) error = `${provider.kind === "resend" ? "Resend" : "SendGrid"} refused the email (${r.status}).`;
         }
       } catch (e) {
         logger.error("message send failed", { error: e, channel: msg.channel });

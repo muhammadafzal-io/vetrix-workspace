@@ -42,6 +42,9 @@ export const envSchema = z
 
     TWILIO_ACCOUNT_SID: optional,
     TWILIO_AUTH_TOKEN: optional,
+    // Email: Resend (preferred) or SendGrid. Either key, plus EMAIL_FROM on a
+    // domain verified with that provider.
+    RESEND_API_KEY: optional,
     SENDGRID_API_KEY: optional,
     // OpenAI (the AI front desk). Without a key, texts and calls are answered
     // by the scripted sandbox AI, even in live mode (so Twilio can be tested
@@ -78,11 +81,9 @@ export const envSchema = z
     // real in production, whatever MESSAGING_MODE says: without them nobody
     // could sign in. MESSAGING_MODE only governs messages to clinic clients.
     if (env.NODE_ENV === "production" && env.APP_STAGE !== "staging") {
-      for (const key of ["SENDGRID_API_KEY", "EMAIL_FROM"] as const) {
-        if (!env[key]) {
-          ctx.addIssue({ code: "custom", path: [key], message: "Required in production for sign-in emails (or set APP_STAGE=staging on a test site)" });
-        }
-      }
+      const why = "Required in production for sign-in emails (or set APP_STAGE=staging on a test site)";
+      if (!env.RESEND_API_KEY && !env.SENDGRID_API_KEY) ctx.addIssue({ code: "custom", path: ["RESEND_API_KEY"], message: `${why}; SENDGRID_API_KEY also works` });
+      if (!env.EMAIL_FROM) ctx.addIssue({ code: "custom", path: ["EMAIL_FROM"], message: why });
     }
     if (env.NODE_ENV === "production") {
       // Without it anyone could trigger the scheduled jobs.
@@ -96,10 +97,12 @@ export const envSchema = z
     }
     if (env.MESSAGING_MODE !== "live") return;
     // Live mode must be able to send and answer calls, otherwise they would fail silently.
+    if (!env.RESEND_API_KEY && !env.SENDGRID_API_KEY) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["RESEND_API_KEY"], message: "Required when MESSAGING_MODE is live (or SENDGRID_API_KEY)" });
+    }
     for (const key of [
       "TWILIO_ACCOUNT_SID",
       "TWILIO_AUTH_TOKEN",
-      "SENDGRID_API_KEY",
       "EMAIL_FROM",
     ] as const) {
       if (!env[key]) {
