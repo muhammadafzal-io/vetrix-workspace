@@ -24,6 +24,14 @@ describe("environment config", () => {
     );
   });
 
+  it("lets a staging site start without SendGrid, but never in live mode or a real production", () => {
+    const staging = { ...base, NODE_ENV: "production", MESSAGING_MODE: "sandbox", APP_STAGE: "staging", JOBS_SECRET: "j".repeat(32) };
+    expect(parseEnv(staging).APP_STAGE).toBe("staging");
+    expect(() => parseEnv({ ...staging, APP_STAGE: undefined })).toThrow(/SENDGRID_API_KEY/);
+    expect(() => parseEnv({ ...staging, MESSAGING_MODE: "live" })).toThrow(/SENDGRID_API_KEY/);
+    expect(() => parseEnv({ ...staging, JOBS_SECRET: undefined })).toThrow(/JOBS_SECRET/);
+  });
+
   it("requires a long session secret and, in production, a working email sender", () => {
     expect(() => parseEnv({ ...base, BETTER_AUTH_SECRET: "short" })).toThrow(/BETTER_AUTH_SECRET/);
     expect(() => parseEnv({ ...base, NODE_ENV: "production", MESSAGING_MODE: "sandbox" })).toThrow(

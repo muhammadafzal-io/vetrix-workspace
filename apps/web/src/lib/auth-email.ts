@@ -3,7 +3,9 @@
 // These are platform emails to staff, not messages to clinic clients, so
 // MESSAGING_MODE does not apply: without them nobody could sign in. They go
 // through SendGrid whenever it is configured. In development without SendGrid
-// the link is printed to the dev server terminal instead.
+// the link is printed to the dev server terminal instead. On a staging site
+// (APP_STAGE=staging) without SendGrid they fail with a clear message: links
+// are never printed there, because hosted logs are shared.
 import type { Env } from "./env";
 import type { Logger } from "./logger";
 
@@ -18,7 +20,7 @@ export interface AuthEmail {
 export type AuthEmailSender = (email: AuthEmail) => Promise<void>;
 
 export function createAuthEmailSender(
-  env: Pick<Env, "NODE_ENV" | "SENDGRID_API_KEY" | "EMAIL_FROM">,
+  env: Pick<Env, "NODE_ENV" | "SENDGRID_API_KEY" | "EMAIL_FROM"> & Partial<Pick<Env, "APP_STAGE">>,
   log: Logger,
   fetchImpl: typeof fetch = fetch,
 ): AuthEmailSender {
@@ -42,6 +44,12 @@ export function createAuthEmailSender(
         throw new Error("Could not send the email. Please try again.");
       }
       log.info("sign-in email sent", { subject: email.subject });
+    };
+  }
+  if (env.NODE_ENV === "production" && env.APP_STAGE === "staging") {
+    return async (email) => {
+      log.warn("sign-in email not sent: email is not set up on this staging site", { subject: email.subject });
+      throw new Error("Email isn't set up on this site yet. Ask an administrator to reset your password.");
     };
   }
   if (env.NODE_ENV === "production") {

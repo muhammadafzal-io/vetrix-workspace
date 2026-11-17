@@ -78,7 +78,13 @@ describe("sign-in emails", () => {
     await expect(send(email)).rejects.toThrow(/Could not send/);
   });
 
-  it("never prints links in production", () => {
+  it("never prints links in production (staging fails clearly instead)", async () => {
+    // Staging without SendGrid: a clear error when used, never a printed link.
+    const staging = createAuthEmailSender({ NODE_ENV: "production", APP_STAGE: "staging", SENDGRID_API_KEY: undefined, EMAIL_FROM: undefined }, quiet);
+    const printed = vi.spyOn(console, "info").mockImplementation(() => {});
+    await expect(staging(email)).rejects.toThrow(/isn't set up/);
+    expect(printed).not.toHaveBeenCalled();
+    printed.mockRestore();
     expect(() => createAuthEmailSender({
       NODE_ENV: "production",
       SENDGRID_API_KEY: undefined

@@ -20,6 +20,11 @@ export const envSchema = z
     NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
     APP_URL: z.string().url().default("http://localhost:3000"),
     LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
+    // "staging": a test site running as production (e.g. on Vercel) that may
+    // start without SendGrid. Sign-in emails (password reset) then fail with a
+    // clear message instead of being sent or printed. Defaults to production,
+    // so a real launch never skips email by accident.
+    APP_STAGE: z.enum(["production", "staging"]).default("production"),
 
     // Must be set explicitly in production. Elsewhere it defaults to sandbox,
     // so real messages are only sent when someone deliberately chooses live.
@@ -72,12 +77,14 @@ export const envSchema = z
     // Sign-in emails (password reset, verification) are always delivered for
     // real in production, whatever MESSAGING_MODE says: without them nobody
     // could sign in. MESSAGING_MODE only governs messages to clinic clients.
-    if (env.NODE_ENV === "production") {
+    if (env.NODE_ENV === "production" && env.APP_STAGE !== "staging") {
       for (const key of ["SENDGRID_API_KEY", "EMAIL_FROM"] as const) {
         if (!env[key]) {
-          ctx.addIssue({ code: "custom", path: [key], message: "Required in production for sign-in emails" });
+          ctx.addIssue({ code: "custom", path: [key], message: "Required in production for sign-in emails (or set APP_STAGE=staging on a test site)" });
         }
       }
+    }
+    if (env.NODE_ENV === "production") {
       // Without it anyone could trigger the scheduled jobs.
       if (!env.JOBS_SECRET || env.JOBS_SECRET.length < 32) {
         ctx.addIssue({ code: "custom", path: ["JOBS_SECRET"], message: "Required in production: at least 32 random characters" });
