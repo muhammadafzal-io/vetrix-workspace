@@ -203,7 +203,10 @@ export function BookingWidget({ clinic, embed }: { clinic: WidgetClinicProps; em
 
       <div ref={scroller} className="flex flex-1 flex-col overflow-y-auto overscroll-contain">
         {isHome && <HomeHero clinic={clinic} embed={embed} onClose={close} />}
-        <main key={step.name} className="cw-in relative grid flex-1 content-start gap-5 px-4 py-5">
+        <main
+          key={step.name}
+          className={cn("cw-in relative flex-1", step.name === "chat" ? "flex flex-col" : "grid content-start gap-5 px-4 py-5")}
+        >
           {notice && <Alert variant="warning">{notice}</Alert>}
 
           {step.name === "home" && <Home clinic={clinic} onBook={() => start("book")} onChat={() => start("chat")} />}
@@ -1265,7 +1268,7 @@ function Chat({ org, loc, token, aiName, clinic, onExpired }: { org: string; loc
   };
 
   return (
-    <div className="-mx-4 -my-5 flex min-h-full flex-1 flex-col">
+    <div className="flex flex-1 flex-col">
       <div className="flex items-center gap-2.5 border-b bg-card px-4 py-2.5">
         <span className="relative flex size-9 items-center justify-center rounded-full bg-secondary font-semibold text-primary">
           {aiName.charAt(0)}
