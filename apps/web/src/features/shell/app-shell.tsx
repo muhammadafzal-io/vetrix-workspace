@@ -6,7 +6,7 @@ import { useEffect, useState } from "react";
 import { Command } from "cmdk";
 import * as Dialog from "@radix-ui/react-dialog";
 import * as Menu from "@radix-ui/react-dropdown-menu";
-import { Building2, Check, ChevronsUpDown, LogOut, MapPin, Menu as MenuIcon, Search, X } from "lucide-react";
+import { Building2, Check, ChevronsUpDown, LogOut, MapPin, Menu as MenuIcon, PawPrint, Search, Users, X } from "lucide-react";
 import type { Permission } from "@vetrix/domain";
 import { BrandBackdrop, LogoOnDark } from "@/components/vetrix/brand-backdrop";
 import { Logo } from "@/components/vetrix/logo";
@@ -182,12 +182,31 @@ function UserMenu({ user, organization, organizationCount }: Pick<ShellProps, "u
   );
 }
 
-function CommandMenu({ open, onOpenChange, groups }: { open: boolean; onOpenChange: (open: boolean) => void; groups: NavGroup[] }) {
+function CommandMenu({
+  open,
+  onOpenChange,
+  groups,
+  search,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  groups: NavGroup[];
+  /** Which records the person may search from here. */
+  search: { clients: boolean; patients: boolean };
+}) {
   const router = useRouter();
+  const [query, setQuery] = useState("");
   const go = (href: string) => {
     onOpenChange(false);
+    setQuery("");
     router.push(href);
   };
+  const q = query.trim();
+  // Typing a name searches clients and pets too, not only page names.
+  const records = q.length >= 2 ? [
+    ...(search.clients ? [{ href: `/clients?q=${encodeURIComponent(q)}`, label: `Search clients for "${q}"`, icon: Users }] : []),
+    ...(search.patients ? [{ href: `/patients?q=${encodeURIComponent(q)}`, label: `Search pets for "${q}"`, icon: PawPrint }] : []),
+  ] : [];
   return (
     <Command.Dialog
       open={open}
@@ -199,11 +218,36 @@ function CommandMenu({ open, onOpenChange, groups }: { open: boolean; onOpenChan
     >
       <div className="flex items-center gap-2 border-b px-4">
         <Search className="size-4 text-muted-foreground" aria-hidden />
-        <Command.Input placeholder="Go to a page or search…" className="h-12 flex-1 bg-transparent text-body outline-none placeholder:text-muted-foreground" />
+        <Command.Input
+          value={query}
+          onValueChange={setQuery}
+          placeholder="Go to a page, or search clients and pets…"
+          className="h-12 flex-1 bg-transparent text-body outline-none placeholder:text-muted-foreground"
+        />
         <kbd className="rounded border bg-muted px-1.5 py-0.5 text-caption text-muted-foreground">Esc</kbd>
       </div>
       <Command.List className="max-h-[60vh] overflow-y-auto p-2">
-        <Command.Empty className="px-3 py-8 text-center text-small text-muted-foreground">No matches.</Command.Empty>
+        {records.length === 0 && <Command.Empty className="px-3 py-8 text-center text-small text-muted-foreground">No matches.</Command.Empty>}
+        {records.length > 0 && (
+          <Command.Group
+            forceMount
+            heading="Search"
+            className="[&_[cmdk-group-heading]]:px-2 [&_[cmdk-group-heading]]:pb-1 [&_[cmdk-group-heading]]:pt-2 [&_[cmdk-group-heading]]:text-caption [&_[cmdk-group-heading]]:font-semibold [&_[cmdk-group-heading]]:uppercase [&_[cmdk-group-heading]]:tracking-wider [&_[cmdk-group-heading]]:text-muted-foreground"
+          >
+            {records.map(({ href, label, icon: Icon }) => (
+              <Command.Item
+                key={href}
+                forceMount
+                value={`search ${label}`}
+                onSelect={() => go(href)}
+                className="flex cursor-pointer items-center gap-3 rounded-md px-2.5 py-2.5 text-body data-[selected=true]:bg-secondary data-[selected=true]:text-secondary-foreground"
+              >
+                <Icon className="size-4 text-primary" aria-hidden />
+                {label}
+              </Command.Item>
+            ))}
+          </Command.Group>
+        )}
         {groups.map((group) => (
           <Command.Group
             key={group.label}
@@ -360,7 +404,12 @@ export function AppShell({ user, organization, organizationCount, location, loca
         </ul>
       </nav>
 
-      <CommandMenu open={searchOpen} onOpenChange={setSearchOpen} groups={groups} />
+      <CommandMenu
+        open={searchOpen}
+        onOpenChange={setSearchOpen}
+        groups={groups}
+        search={{ clients: permissions.includes("clients.view"), patients: permissions.includes("patients.view") }}
+      />
     </div>
   );
 }

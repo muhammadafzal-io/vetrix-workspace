@@ -260,7 +260,16 @@ export function HoursForm({ saved }: { saved: ({ opens: string; closes: string }
       {(d, state) => (
         <ul className="divide-y rounded-lg border">
           {ORDER.map((day) => (
-            <HoursRow key={day} day={day} saved={saved[day] ?? null} d={d} error={fieldError(state, `opens_${day}`) ?? fieldError(state, `closes_${day}`)} />
+            // Keyed by the saved hours: after a save, React resets the form's
+            // checkboxes, so each row is rebuilt from what was stored and the
+            // switch always matches it.
+            <HoursRow
+              key={`${day}:${saved[day] ? `${saved[day]!.opens}-${saved[day]!.closes}` : "closed"}`}
+              day={day}
+              saved={saved[day] ?? null}
+              d={d}
+              error={fieldError(state, `opens_${day}`) ?? fieldError(state, `closes_${day}`)}
+            />
           ))}
         </ul>
       )}
