@@ -20,7 +20,26 @@ describe("OpenAI triage classifier", () => {
     const a = await classify("he ate my mints, the sugar-free ones", ["Max"]);
     expect(a.level).toBe("emergency");
     expect(calls[0]!.body.model).toBe("m");
-    expect((calls[0]!.body.messages as { content: string }[])[0]!.content).toContain('"Max"');
+    expect((calls[0]!.body.messages as { content: string }[])[1]!.content).toContain('"Max"');
+  });
+
+  it("sends the triage cache key and logs token counts only", async () => {
+    const logged: Record<string, unknown>[] = [];
+    const log = { ...quiet, info: (m: string, fields: Record<string, unknown>) => m === "ai usage" && logged.push(fields) } as unknown as Logger;
+    const calls: { body: Record<string, unknown> }[] = [];
+    const f = (async (_url: string, init: RequestInit) => {
+      calls.push({ body: JSON.parse(String(init.body)) });
+      const content = JSON.stringify({ level: "routine", trigger_ids: [], evidence: "", unsure: false });
+      return new Response(
+        JSON.stringify({
+          choices: [{ message: { content } }],
+          usage: { prompt_tokens: 1350, completion_tokens: 40, prompt_tokens_details: { cached_tokens: 1280 } },
+        }),
+      );
+    }) as unknown as typeof fetch;
+    await createOpenAiClassifier({ apiKey: "k", model: "m" }, log, f)("book a checkup", ["Max"]);
+    expect(calls[0]!.body.prompt_cache_key).toBe("vetrix-triage");
+    expect(logged).toEqual([{ call: "triage", input: 1350, cached: 1280, output: 40 }]);
   });
 
   it("never lowers what the pack phrases found", async () => {

@@ -9,8 +9,11 @@ describe("triage prompt", () => {
   it("lists the pack triggers and the household's pet names", () => {
     const p = buildTriagePrompt(rules, "she ate my gum", ["Chocolate"]);
     expect(p.system).toContain("toxin_ingestion (Possible poisoning)");
-    expect(p.system).toContain('"Chocolate"');
-    expect(p.user).toBe("she ate my gum");
+    expect(p.user).toBe('Pet names: "Chocolate"\n\nThe owner said: she ate my gum');
+    // Cache: the system message is identical for every household and message.
+    expect(p.system).not.toContain('"Chocolate"');
+    expect(buildTriagePrompt(rules, "book a checkup", ["Bella"]).system).toBe(p.system);
+    expect(buildTriagePrompt(rules, "book a checkup", []).user).toBe("The owner said: book a checkup");
   });
 });
 

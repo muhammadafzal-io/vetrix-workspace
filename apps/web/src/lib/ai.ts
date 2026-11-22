@@ -33,6 +33,34 @@ export function aiMode(env: Pick<Env, "OPENAI_API_KEY" | "OPENAI_TEXT_MODEL"> = 
 /** A slow model must not leave a caller waiting: fall back to the phrase rules. */
 const TIMEOUT_MS = 6000;
 
+/**
+ * Prompt caching: OpenAI bills the identical start of a prompt (1,024 tokens
+ * or more) at a discount. The key groups calls of one kind so they reach the
+ * same cache. It names the call type only, never a clinic or a client.
+ */
+export const PROMPT_CACHE_KEY = {
+  triage: "vetrix-triage",
+  understand: "vetrix-understand",
+  rewrite: "vetrix-rewrite",
+} as const;
+
+interface Usage {
+  prompt_tokens?: number;
+  completion_tokens?: number;
+  prompt_tokens_details?: { cached_tokens?: number };
+}
+
+/** Token counts per call, so the cache saving can be checked. Numbers only. */
+function logUsage(log: Logger, what: string, usage: Usage | undefined): void {
+  if (!usage) return;
+  log.info("ai usage", {
+    call: what,
+    input: usage.prompt_tokens ?? 0,
+    cached: usage.prompt_tokens_details?.cached_tokens ?? 0,
+    output: usage.completion_tokens ?? 0,
+  });
+}
+
 export function createOpenAiClassifier(
   config: { apiKey: string; model: string },
   log: Logger,
@@ -54,13 +82,15 @@ export function createOpenAiClassifier(
             { role: "user", content: prompt.user },
           ],
           response_format: { type: "json_schema", json_schema: { name: "triage", strict: true, schema: TRIAGE_ANSWER_SCHEMA } },
+          prompt_cache_key: PROMPT_CACHE_KEY.triage,
         }),
       });
       if (!res.ok) {
         log.warn("triage model call failed; using phrase rules", { status: res.status });
         return phrases;
       }
-      const body = (await res.json()) as { choices?: { message?: { content?: string; refusal?: string } }[] };
+      const body = (await res.json()) as { choices?: { message?: { content?: string; refusal?: string } }[]; usage?: Usage };
+      logUsage(log, "triage", body.usage);
       const content = body.choices?.[0]?.message?.content;
       // A refusal or empty answer is "unsure": parseTriageAnswer escalates it.
       return mergeAssessments(phrases, parseTriageAnswer(rules, content ?? ""));
@@ -90,7 +120,7 @@ async function askJson(
   prompt: { system: string; user: string },
   schema: { name: string; schema: object },
   log: Logger,
-  what: string,
+  what: "understand" | "rewrite",
   fetchImpl: typeof fetch,
 ): Promise<Record<string, unknown> | null> {
   try {
@@ -105,13 +135,15 @@ async function askJson(
           { role: "user", content: prompt.user },
         ],
         response_format: { type: "json_schema", json_schema: { name: schema.name, strict: true, schema: schema.schema } },
+        prompt_cache_key: PROMPT_CACHE_KEY[what],
       }),
     });
     if (!res.ok) {
       log.warn(`${what} model call failed; using the script`, { status: res.status });
       return null;
     }
-    const body = (await res.json()) as { choices?: { message?: { content?: string } }[] };
+    const body = (await res.json()) as { choices?: { message?: { content?: string } }[]; usage?: Usage };
+    logUsage(log, what, body.usage);
     const content = body.choices?.[0]?.message?.content;
     return content ? (JSON.parse(content) as Record<string, unknown>) : null;
   } catch (error) {

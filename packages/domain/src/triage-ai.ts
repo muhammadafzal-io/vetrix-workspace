@@ -27,23 +27,27 @@ export const TRIAGE_ANSWER_SCHEMA = {
 export function buildTriagePrompt(rules: TriageRules, text: string, petNames: readonly string[]): { system: string; user: string } {
   const list = (triggers: TriageRules["emergency_triggers"]) =>
     triggers.map((t) => `- ${t.id} (${t.name}): e.g. ${t.phrases.slice(0, 6).map((p) => `"${p}"`).join(", ")}`).join("\n");
+  // Cost: OpenAI caches the system message only when it is identical to a
+  // recent one (measured 20 Nov 2026: changing even its last line drops the
+  // cache to 0). So the system message is the same for every caller and
+  // everything per call, the pet names included, goes in the user message.
   const system = [
     "You triage what a pet owner says to a veterinary clinic's front desk. You never give medical advice.",
     "Classify by meaning. The example phrases are examples, not a complete list: paraphrases, misspellings and other languages count.",
     "Levels: emergency = needs a doctor right now; urgent = should be seen today or tomorrow; routine = anything else, including booking talk.",
     "If you are unsure between two levels, choose the higher one and set unsure to true.",
     "A caller saying it is not that bad does not lower the level of a symptom they described.",
-    petNames.length
-      ? `These are the household's pet NAMES, not substances or symptoms: ${petNames.map((n) => `"${n}"`).join(", ")}. A pet called Chocolate is not chocolate, unless the words say something was eaten.`
-      : "",
     "Use trigger ids from these lists only; leave trigger_ids empty for routine.",
     `Emergency triggers:\n${list(rules.emergency_triggers)}`,
     `Urgent triggers:\n${list(rules.urgent_triggers)}`,
     `If nothing fits but it is still serious, use "${UNCLASSIFIED_EMERGENCY}" or "${UNCLASSIFIED_CONCERN}".`,
-  ]
-    .filter(Boolean)
-    .join("\n\n");
-  return { system, user: text };
+    "The user message may list the household's pet NAMES. They are names, not substances or symptoms: a pet called Chocolate is not chocolate, unless the words say something was eaten.",
+    "Classify only what the owner said.",
+  ].join("\n\n");
+  const user = petNames.length
+    ? `Pet names: ${petNames.map((n) => `"${n}"`).join(", ")}\n\nThe owner said: ${text}`
+    : `The owner said: ${text}`;
+  return { system, user };
 }
 
 /** Checks the model's answer; anything malformed escalates instead of being trusted. */
