@@ -13,6 +13,7 @@
 // verified with their mobile plus a pet's name before any pet or visit
 // detail is discussed, and the pet list is never read out before that.
 import { acceptRewrite, describeExpectation, engineText, mustKeep, type ConversationAI } from "./conversation-ai";
+import { trace } from "./trace";
 import { formatPhone, type Species, type TemperamentFlag } from "./clients";
 import { ConflictError } from "./errors";
 import {
@@ -1420,9 +1421,12 @@ export async function respond(state: ConversationState, text: string, ctx: Front
 
   // Triage first, on every utterance, with the household's pet names masked.
   const petNames = [...s.pets.map((p) => p.name), ...(s.newPet?.name ? [s.newPet.name] : [])];
+  trace("domain", "domain/front-desk.ts › respond", `a) triage first, on every message (${petNames.length} pet name(s) masked)`);
   const applied = applyAssessment(s.triage, await port.classify(text, petNames));
   s.triage = applied.state;
+  trace("domain", "domain/front-desk.ts › respond", `   triage result: ${s.triage.level}${applied.escalated ? " (raised; it never goes down within a conversation)" : ""}`);
   if (applied.escalated && s.triage.level === "emergency") {
+    trace("domain", "domain/front-desk.ts › respond", "   EMERGENCY → stop booking, give the ER steps, transfer or alert staff (Turn.emergency)");
     s.reason.push(text);
     await turn.emergency(applied.newMatches, text);
     return { state: s, replies: turn.replies };
@@ -1447,9 +1451,14 @@ export async function respond(state: ConversationState, text: string, ctx: Front
   let input = text;
   if (port.ai) {
     const { expecting, open, forms } = describeExpectation(s, ctx);
+    trace("domain", "domain/front-desk.ts › respond", `b) OpenAI restates the message for the engine (expecting: ${forms ? "one of " + forms.length + " fixed answers" : "free text"})`);
     const restated = await port.ai.understand({ text, expecting, open, forms, aiName: ctx.aiName, clinicName: ctx.clinicName }).catch(() => null);
     input = engineText(text, restated, open, forms);
+    trace("domain", "domain/front-desk.ts › respond", `   ${restated === null ? "no answer → the owner's own words are used" : input === text ? "restatement not accepted → the owner's own words are used" : "restatement accepted"}`);
+  } else {
+    trace("domain", "domain/front-desk.ts › respond", "b) no OpenAI key → the engine reads the owner's own words (sandbox AI)");
   }
+  trace("domain", "domain/front-desk.ts › respond", `c) Turn.handle: the scripted engine decides the action (phase "${s.phase}")`);
   await turn.handle(input, s.phase === "open" || s.phase === "anything_else" ? intentOverride : null);
   return { state: s, replies: await worded(turn.replies, s, ctx, port, text) };
 }
@@ -1460,12 +1469,16 @@ export async function respond(state: ConversationState, text: string, ctx: Front
  * emergency, never by voice (yet); the script is used whenever a check fails.
  */
 async function worded(replies: string[], s: ConversationState, ctx: FrontDeskContext, port: FrontDeskPort, callerText: string): Promise<string[]> {
-  if (!port.ai || ctx.channel !== "sms" || s.triage.level === "emergency" || replies.length === 0) return replies;
+  if (!port.ai || ctx.channel !== "sms" || s.triage.level === "emergency" || replies.length === 0) {
+    trace("domain", "domain/front-desk.ts › worded", "d) reply kept exactly as scripted (no AI, voice, or emergency)");
+    return replies;
+  }
   const names = [ctx.clinicName, ctx.aiName, s.caller.firstName, s.newPet?.name, ...s.pets.map((p) => p.name), ...s.booked.map((b) => b.petName)].filter(
     (n): n is string => Boolean(n),
   );
   const req = { replies, keep: mustKeep(replies, names), aiName: ctx.aiName, clinicName: ctx.clinicName, channel: ctx.channel, callerText };
   const rewritten = acceptRewrite(req, await port.ai.rewrite(req).catch(() => null));
+  trace("domain", "domain/front-desk.ts › worded", rewritten ? "d) OpenAI reworded the reply; every time, date, price and name survived" : "d) rewording failed a fact check → the scripted reply is used");
   return rewritten ? [rewritten] : replies;
 }
 

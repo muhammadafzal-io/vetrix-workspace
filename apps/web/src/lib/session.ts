@@ -6,7 +6,7 @@ import { cache } from "react";
 import { cookies, headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { listLocations, loadStaffAccess, membershipsFor, type LocationSummary } from "@vetrix/db/runtime";
-import type { Permission } from "@vetrix/domain";
+import { trace, traced, type Permission } from "@vetrix/domain";
 import { auth } from "./auth";
 import { resolveStaffContext, type StaffContext, type StaffContextResult } from "./staff-context";
 import { tenancy } from "./tenancy";
@@ -20,19 +20,33 @@ export const ACTIVE_ORG_COOKIE = "vetrix.org";
 export const ACTIVE_LOCATION_COOKIE = "vetrix.location";
 
 /** The Better Auth session for this request, or null. Cached per request. */
-export const getSession = cache(async () => auth().api.getSession({ headers: await headers() }));
+export const getSession = cache(async () =>
+  traced(
+    "auth",
+    "lib/session.ts › getSession",
+    "Better Auth reads the session cookie and checks it (registry database)",
+    async () => auth().api.getSession({ headers: await headers() }),
+    (s) => (s ? `signed in as user ${s.user.id.slice(0, 8)}…` : "no valid session"),
+  ),
+);
 
 export const getStaffContext = cache(async (): Promise<StaffContextResult | null> => {
   const session = await getSession();
   if (!session) return null;
   const t = tenancy();
-  return resolveStaffContext(
+  return traced(
+    "auth",
+    "lib/staff-context.ts › resolveStaffContext",
+    "memberships (registry) → clinic database → staff record and permissions",
+    async () => resolveStaffContext(
     {
       memberships: (userId) => membershipsFor(t.registry, userId),
       clinicFor: async (organizationId) => (await t.clinicPool(organizationId)).pool,
       loadAccess: loadStaffAccess,
     },
     { userId: session.user.id, activeOrganizationId: (await cookies()).get(ACTIVE_ORG_COOKIE)?.value },
+    ),
+    (r) => (r.status === "ok" ? `organization ${r.context.organization.organization_slug}, ${r.context.access.locations.size} location(s)` : r.status),
   );
 });
 
@@ -59,5 +73,7 @@ export const requireShell = cache(async (): Promise<ShellContext> => {
   const chosen = (await cookies()).get(ACTIVE_LOCATION_COOKIE)?.value;
   const location = locations.find((l) => l.id === chosen) ?? locations[0];
   if (!location) redirect("/no-access");
-  return { ...ctx, locations, location, permissions: ctx.access.locations.get(location.id) ?? new Set() };
+  const permissions = ctx.access.locations.get(location.id) ?? new Set<Permission>();
+  trace("auth", "lib/session.ts › requireShell", `active location ${location.name}, ${permissions.size} permission(s) → the page may render`);
+  return { ...ctx, locations, location, permissions };
 });

@@ -28,7 +28,7 @@ import {
   type SqlClient,
   type WidgetSession,
 } from "@vetrix/db/runtime";
-import { codeText, formatPhone, isWidgetCode, normalizePhone, type AgeBand, type NewClientForm } from "@vetrix/domain";
+import { codeText, formatPhone, isWidgetCode, normalizePhone, trace, traced, type AgeBand, type NewClientForm } from "@vetrix/domain";
 import { conversationAI, triageClassifier } from "@/lib/ai";
 import { claimBase } from "@/lib/claim";
 import { getEnv, getMessagingMode } from "@/lib/env";
@@ -338,11 +338,18 @@ async function ownChat(pool: SqlClient, locationId: string, callId: string, sess
 }
 
 export async function chatStartAction(org: string, locationId: string, token: string): Promise<ChatResult> {
+  trace("action", "features/widget/actions.ts › chatStartAction", "browser asked to start a chat (server action = a POST to this page)");
   if (!take(limits.chat, await visitor())) return BUSY;
   try {
     const s = await withSession(org, locationId, token);
     if ("fail" in s) return s.fail!;
-    const r = await startFrontDesk(s.pool, { locationId, channel: "web", callerNumber: s.session.mobile, sandbox: sandbox(org) });
+    const r = await traced(
+      "db",
+      "db/front-desk.ts › startFrontDesk",
+      "open a conversation: find the caller, greet, save a calls row",
+      () => startFrontDesk(s.pool, { locationId, channel: "web", callerNumber: s.session.mobile, sandbox: sandbox(org) }),
+      (t) => `conversation ${t.callId.slice(0, 8)}… started, ${t.replies.length} greeting line(s)`,
+    );
     return { ok: true, callId: r.callId, replies: r.replies, ended: r.ended };
   } catch (error) {
     logger.error("widget chat start failed", { error });
@@ -351,15 +358,29 @@ export async function chatStartAction(org: string, locationId: string, token: st
 }
 
 export async function chatSendAction(org: string, locationId: string, token: string, callId: string, text: string): Promise<ChatResult> {
+  const HERE = "features/widget/actions.ts › chatSendAction";
   const body = String(text ?? "").trim().slice(0, MAX_TEXT);
+  trace("action", HERE, `① browser sent a chat message (${body.length} characters) as a server action`);
   if (!body) return { ok: false, error: "Type a message." };
   if (!take(limits.chat, await visitor())) return BUSY;
   try {
     const s = await withSession(org, locationId, token);
-    if ("fail" in s) return s.fail!;
+    if ("fail" in s) {
+      trace("action", HERE, "widget session missing or expired → ask for the code again");
+      return s.fail!;
+    }
+    trace("action", HERE, "② clinic found and widget session valid (features/widget/actions.ts › withSession)");
     if (!(await ownChat(s.pool, locationId, callId, s.session))) return { ok: false, error: "This chat has ended. Start a new one.", reason: "session" };
-    const r = await continueFrontDesk(s.pool, { locationId, callId, text: body }, Date.now(), { classify: triageClassifier(), ai: conversationAI(), claimBase: claimBase(s.organizationId) });
+    trace("action", HERE, "③ this chat belongs to this person → hand the message to the front desk");
+    const r = await traced(
+      "db",
+      "db/front-desk.ts › continueFrontDesk",
+      "one turn of the conversation, inside one database transaction",
+      () => continueFrontDesk(s.pool, { locationId, callId, text: body }, Date.now(), { classify: triageClassifier(), ai: conversationAI(), claimBase: claimBase(s.organizationId) }),
+      (t) => `turn saved: ${t.replies.length} reply line(s), triage ${t.triageLevel}, ${t.notes.length} staff note(s)${t.ended ? ", conversation ended" : ""}`,
+    );
     await deliverTexts(org, s.organizationId, locationId, r.outbound);
+    trace("action", HERE, `⑦ ${r.outbound.length} text(s) to send (sandbox sends none) → return the replies to the browser, React shows them`);
     return { ok: true, callId, replies: r.replies, ended: r.ended };
   } catch (error) {
     const message = userMessage(error);

@@ -4,25 +4,37 @@
 // still happens on the server in requireStaff().
 import { NextResponse, type NextRequest } from "next/server";
 import { getSessionCookie } from "better-auth/cookies";
+import { trace } from "@vetrix/domain";
 import { widgetFrameOrigins } from "@/lib/widget-frame";
 
 // Public pages: sign-in, waitlist claim links and booking links from texts, and the booking widget.
 const PUBLIC_PATHS = ["/sign-in", "/forgot-password", "/reset-password", "/claim", "/b", "/w"];
 const SLUG = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 
+const HERE = "middleware.ts › middleware";
+
 export async function middleware(request: NextRequest) {
   const { pathname, search } = request.nextUrl;
+  trace("middleware", HERE, `${request.method} ${pathname}: request arrives (runs before every page)`);
   // The booking widget may be framed only by the clinic's own websites.
   if (pathname.startsWith("/w/")) {
     const org = pathname.split("/")[2] ?? "";
     const origins = SLUG.test(org) ? await widgetFrameOrigins(org) : [];
     const response = NextResponse.next();
     response.headers.set("Content-Security-Policy", `frame-ancestors ${["'self'", ...origins].join(" ")}; base-uri 'self'; form-action 'self'; object-src 'none'`);
+    trace("middleware", HERE, `booking widget: ${origins.length} allowed website(s) may frame it → continue to the page`);
     return response;
   }
   // The website at "/" is public (the page sends signed-in staff to Overview).
-  if (pathname === "/" || PUBLIC_PATHS.some((p) => pathname === p || pathname.startsWith(`${p}/`))) return NextResponse.next();
-  if (getSessionCookie(request, { cookiePrefix: "vetrix" })) return NextResponse.next();
+  if (pathname === "/" || PUBLIC_PATHS.some((p) => pathname === p || pathname.startsWith(`${p}/`))) {
+    trace("middleware", HERE, "public page → continue (no sign-in needed)");
+    return NextResponse.next();
+  }
+  if (getSessionCookie(request, { cookiePrefix: "vetrix" })) {
+    trace("middleware", HERE, "session cookie present → continue (the real check happens in session.ts)");
+    return NextResponse.next();
+  }
+  trace("middleware", HERE, "no session cookie → redirect to /sign-in");
   const url = request.nextUrl.clone();
   url.pathname = "/sign-in";
   url.search = pathname === "/" ? "" : `?next=${encodeURIComponent(pathname + search)}`;

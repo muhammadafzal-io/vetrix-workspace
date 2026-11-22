@@ -18,6 +18,7 @@ import {
   parseTriageAnswer,
   TRIAGE_ANSWER_SCHEMA,
   type TriageRules,
+  trace,
 } from "@vetrix/domain";
 import { sandboxClassifier, type TriageClassifier } from "@vetrix/db/runtime";
 import { getVeterinaryPack } from "@vetrix/pack";
@@ -53,6 +54,11 @@ interface Usage {
 /** Token counts per call, so the cache saving can be checked. Numbers only. */
 function logUsage(log: Logger, what: string, usage: Usage | undefined): void {
   if (!usage) return;
+  trace(
+    "ai",
+    `lib/ai.ts › ${what}`,
+    `← OpenAI answered: ${usage.prompt_tokens ?? 0} input tokens (${usage.prompt_tokens_details?.cached_tokens ?? 0} cached), ${usage.completion_tokens ?? 0} output`,
+  );
   log.info("ai usage", {
     call: what,
     input: usage.prompt_tokens ?? 0,
@@ -71,6 +77,7 @@ export function createOpenAiClassifier(
     const phrases = classifyByPhrases(rules, text, { petNames });
     const prompt = buildTriagePrompt(rules, text, petNames);
     try {
+      trace("ai", "lib/ai.ts › triage", `→ POST api.openai.com (model ${config.model}, ${TIMEOUT_MS / 1000} s limit; phrase rules already ran)`);
       const res = await fetchImpl("https://api.openai.com/v1/chat/completions", {
         method: "POST",
         headers: { authorization: `Bearer ${config.apiKey}`, "content-type": "application/json" },
@@ -124,6 +131,7 @@ async function askJson(
   fetchImpl: typeof fetch,
 ): Promise<Record<string, unknown> | null> {
   try {
+    trace("ai", `lib/ai.ts › ${what}`, `→ POST api.openai.com (model ${config.model}, ${TIMEOUT_MS / 1000} s limit)`);
     const res = await fetchImpl("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: { authorization: `Bearer ${config.apiKey}`, "content-type": "application/json" },

@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { AlertTriangle, ArrowRight, CalendarDays, CheckCircle2, ClipboardList, PawPrint, Users } from "lucide-react";
 import { loadOverview, type TodayAppointment } from "@vetrix/db/runtime";
+import { trace, traced } from "@vetrix/domain";
 import { EmptyState } from "@/components/patterns/empty-state";
 import { BrandBackdrop, Highlight } from "@/components/vetrix/brand-backdrop";
 import { requireShell } from "@/lib/session";
@@ -55,10 +56,17 @@ function Stat({ label, value, icon: Icon, href }: { label: string; value: number
 }
 
 export default async function OverviewPage() {
-  const shell = await requireShell();
+  trace("page", "app/(app)/overview/page.tsx › OverviewPage", "page starts (server component)");
+  const shell = await requireShell(); // already done by the layout: React cache() returns the same answer
   const tz = shell.location.timezone;
   const { hour, date } = clinicNow(tz);
-  const data = await loadOverview(shell.clinic, shell.location.id);
+  const data = await traced(
+    "db",
+    "db/overview.ts › loadOverview",
+    "today's appointments, open tasks and counts (3 queries in parallel)",
+    () => loadOverview(shell.clinic, shell.location.id),
+    (d) => `${d.appointments.length} appointment(s), ${d.tasks.length} task(s) → render HTML`,
+  );
   const can = (p: Parameters<typeof shell.permissions.has>[0]) => shell.permissions.has(p);
   const firstName = shell.access.displayName.split(" ")[0];
   const urgentTasks = data.tasks.filter((t) => t.priority === "urgent").length;

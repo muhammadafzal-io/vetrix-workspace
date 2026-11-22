@@ -36,6 +36,8 @@ import {
   type TriageAssessment,
   type TriageLevel,
   type ConversationAI,
+  trace,
+  traced,
 } from "@vetrix/domain";
 import { getVeterinaryPack } from "@vetrix/pack";
 import { bookAppointment, cancelAppointment, loadPatientForBooking, loadSchedulingData, loadService, rescheduleAppointment } from "./booking";
@@ -289,10 +291,17 @@ function createPort(
   return {
     ai: input.ai,
     async classify(text, petNames) {
-      return (input.classify ?? sandboxClassifier)(text, petNames);
+      return traced(
+        "ai",
+        "db/front-desk.ts › port.classify",
+        input.classify ? "triage: pack phrase rules + OpenAI (lib/ai.ts › createOpenAiClassifier)" : "triage: sandbox AI (pack phrase rules only)",
+        () => (input.classify ?? sandboxClassifier)(text, petNames),
+        (a) => `level ${a.level}${a.matches.length ? `, trigger ${a.matches.map((m) => m.triggerId).join(", ")}` : ""}`,
+      );
     },
 
     async findSlots(req) {
+      trace("db", "db/front-desk.ts › port.findSlots", `engine needs free times for ${req.packServiceId} → load schedules and find slots`);
       const serviceId = serviceRow(req.packServiceId);
       if (!serviceId) return { slots: [], blocked: "We don't offer that at this clinic." };
       const [service, patient, data] = await Promise.all([
@@ -352,6 +361,7 @@ function createPort(
     },
 
     async book(req) {
+      trace("db", "db/front-desk.ts › port.book", `engine chose a slot → book it (db/booking.ts › bookAppointment), service ${req.packServiceId}`);
       const serviceId = serviceRow(req.packServiceId);
       if (!serviceId) throw new ConflictError("That service is not offered here.");
       // A savepoint keeps the turn's transaction usable if the slot was just taken,
@@ -371,6 +381,7 @@ function createPort(
         }
         await db.query("RELEASE SAVEPOINT ai_book");
         await db.query(`UPDATE calls SET appointment_id = $2 WHERE id = $1`, [callId, result.appointmentId]);
+        trace("db", "db/front-desk.ts › port.book", `appointment ${result.appointmentId.slice(0, 8)}… saved and linked to this conversation`);
         return { appointmentId: result.appointmentId, providerName: await providerName(result.slot.providerId), preopStart, preopValid };
       } catch (error) {
         await db.query("ROLLBACK TO SAVEPOINT ai_book");
@@ -600,7 +611,9 @@ async function runTurn(
   step: (state: ConversationState, ctx: FrontDeskContext, port: FrontDeskPort) => ReturnType<typeof respond>,
   systemNote?: string,
 ): Promise<TurnOutput> {
+  const HERE = "db/front-desk.ts › runTurn";
   return withTransaction(pool, async (db) => {
+    trace("db", HERE, "④ BEGIN transaction; lock this conversation's row (SELECT … FOR UPDATE) so two messages cannot run at once");
     const { rows } = await db.query<{ state: ConversationState; channel: CallChannel; caller_number: string | null; sandbox: boolean }>(
       `SELECT state, channel, caller_number, sandbox FROM calls WHERE id = $1 AND location_id = $2 FOR UPDATE`,
       [input.callId, input.locationId],
@@ -611,7 +624,8 @@ async function runTurn(
     const ctx: FrontDeskContext = { ...setup.ctx, callerNumber: call.caller_number, channel: talkChannel(call.channel) };
     const out = newNotes();
     const port = createPort(db, { locationId: input.locationId, callId: input.callId, setup, sandbox: call.sandbox, channel: call.channel, classify: options.classify, claimBase: options.claimBase, ai: options.ai }, out);
-    const { state, replies } = await step(call.state, ctx, port);
+    trace("db", HERE, `saved state loaded (phase "${call.state.phase}") + clinic setup (hours, services, rules) → run the engine`);
+    const { state, replies } = await traced("domain", "domain/front-desk.ts › respond", `⑤ engine handles the message (phase "${call.state.phase}")`, () => step(call.state, ctx, port), (r) => `phase "${call.state.phase}" → "${r.state.phase}", ${r.replies.length} reply line(s)`);
     const ended = state.phase === "ended" && !out.transferTo;
     await addTurns(db, input.callId, [
       ...(systemNote ? [{ speaker: "system" as const, body: systemNote }] : []),
@@ -628,6 +642,7 @@ async function runTurn(
       [input.callId, input.locationId, JSON.stringify(state), state.triage.level, state.caller.clientId, state.petId,
        state.transferOutcome, state.outcomes.join(",") || null, summarizeConversation(state), ended, new Date(now)],
     );
+    trace("db", HERE, "⑥ transcript lines (call_turns) and new state (calls.state) saved → COMMIT");
     return { callId: input.callId, replies, notes: out.notes, ended, triageLevel: state.triage.level, outbound: out.outbound, transferTo: out.transferTo };
   });
 }

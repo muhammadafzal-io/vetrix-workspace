@@ -1,5 +1,6 @@
 import { AppShell } from "@/features/shell/app-shell";
 import { getMessagingMode } from "@/lib/env";
+import { trace } from "@vetrix/domain";
 import { getSession, requireShell } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
@@ -7,6 +8,7 @@ export const dynamic = "force-dynamic";
 // Signed-in staff area. Every page below this layout requires an active staff
 // record in the chosen organization and a location they can open.
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
+  trace("page", "app/(app)/layout.tsx › AppLayout", "staff layout starts: who is signed in, which clinic and location?");
   const shell = await requireShell();
   const session = await getSession();
   return (

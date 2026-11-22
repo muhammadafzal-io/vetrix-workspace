@@ -21,3 +21,4 @@ export * from "./settings";
 export * from "./online-booking";
 export * from "./widget";
 export * from "./conversation-ai";
+export * from "./trace";
