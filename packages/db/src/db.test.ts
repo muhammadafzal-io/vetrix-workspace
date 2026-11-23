@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { describeUrl, neonRegionFromUrl, resolveDatabaseRef } from "./database-ref";
+import { decryptDatabaseUrl, describeUrl, encryptDatabaseUrl, neonRegionFromUrl, resolveDatabaseRef } from "./database-ref";
 import { checksumOf, loadMigrations, MigrationError, planMigrations, type Migration } from "./migrations";
 
 const url = "postgresql://user:secret@ep-mute-night-bb4ew5ht-pooler.c-15.us-east-1.aws.neon.tech/clinic_dev?sslmode=require";
@@ -15,6 +15,32 @@ describe("database_ref", () => {
     expect(() => resolveDatabaseRef("env:BAD", { BAD: "mysql://x" })).toThrow(/postgresql/);
   });
 
+  it("encrypts connection strings so the registry never holds them in plain text", () => {
+    const key = Buffer.alloc(32, 7).toString("base64");
+    const ref = encryptDatabaseUrl(url, key);
+    expect(ref.startsWith("enc:v1:")).toBe(true);
+    expect(ref).not.toContain("secret");
+    expect(ref).not.toBe(encryptDatabaseUrl(url, key)); // a fresh IV each time
+    expect(resolveDatabaseRef(ref, { DATABASE_SECRETS_KEY: key })).toBe(url);
+    expect(decryptDatabaseUrl(ref, key)).toBe(url);
+  });
+
+  it("refuses a wrong key, a changed value or a missing key, without showing the value", () => {
+    const key = Buffer.alloc(32, 7).toString("base64");
+    const ref = encryptDatabaseUrl(url, key);
+    const other = Buffer.alloc(32, 9).toString("base64");
+    expect(() => resolveDatabaseRef(ref, { DATABASE_SECRETS_KEY: other })).toThrow(/could not be decrypted/);
+    const flipped = ref.slice(0, -2) + (ref.endsWith("A") ? "B" : "A") + ref.slice(-1);
+    expect(() => resolveDatabaseRef(flipped, { DATABASE_SECRETS_KEY: key })).toThrow(/could not be decrypted|too short/);
+    expect(() => resolveDatabaseRef(ref, {})).toThrow(/DATABASE_SECRETS_KEY is not set/);
+    expect(() => encryptDatabaseUrl(url, "short")).toThrow(/32 random bytes/);
+    try {
+      resolveDatabaseRef(ref, { DATABASE_SECRETS_KEY: other });
+    } catch (error) {
+      expect((error as Error).message).not.toContain("secret");
+    }
+  });
+
   it("finds the Neon region and never prints the password", () => {
     expect(neonRegionFromUrl(url)).toBe("aws-us-east-1");
     expect(describeUrl(url)).toBe("ep-mute-night-bb4ew5ht-pooler.c-15.us-east-1.aws.neon.tech/clinic_dev");
@@ -24,7 +50,7 @@ describe("database_ref", () => {
 
 describe("migration files", () => {
   it("loads the registry and clinic files in order", () => {
-    expect(loadMigrations("registry").map((m) => m.version)).toEqual(["001_registry", "003_auth", "005_phone_numbers"]);
+    expect(loadMigrations("registry").map((m) => m.version)).toEqual(["001_registry", "003_auth", "005_phone_numbers", "010_platform_admin"]);
     expect(loadMigrations("clinic").map((m) => m.version)).toEqual(["002_clinic", "004_front_desk", "006_messages", "007_jobs_and_replies", "008_booking_links", "009_widget"]);
   });
 

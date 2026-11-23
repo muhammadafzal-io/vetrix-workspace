@@ -67,6 +67,22 @@ export const envSchema = z
     PUBLIC_CONTACT_EMAIL: optional,
     // Bearer token Cloud Scheduler sends to /api/jobs/tick. Required in production.
     JOBS_SECRET: optional,
+    // Adding clinics from the Clinics page (platform admins). Both are needed
+    // to add a clinic; without them the page explains what to set.
+    // NEON_API_KEY: Neon console → Account settings → API keys. Creates one
+    // Neon project per clinic.
+    NEON_API_KEY: optional,
+    // Neon organization for clinic projects. Only needed when a personal key's
+    // account has several organizations (with one, it is found automatically).
+    NEON_ORG_ID: optional,
+    // Encrypts each clinic's connection string in the registry (enc:v1:…).
+    // 32 random bytes, base64: `openssl rand -base64 32`. Needed to open every
+    // clinic added from the app, so keep a backup: losing it locks them out.
+    DATABASE_SECRETS_KEY: z
+      .string()
+      .optional()
+      .transform((v) => (v ? v : undefined))
+      .refine((v) => v === undefined || Buffer.from(v, "base64").length === 32, "Must be 32 random bytes, base64 (openssl rand -base64 32)"),
     SENTRY_DSN: optional,
   })
   .superRefine((env, ctx) => {

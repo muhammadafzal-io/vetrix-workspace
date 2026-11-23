@@ -55,3 +55,21 @@ export async function platformUserEmails(registry: SqlClient, ids: string[]): Pr
   const { rows } = await registry.query<{ id: string; email: string }>(`SELECT id, email::text AS email FROM platform_users WHERE id = ANY($1::uuid[])`, [ids]);
   return new Map(rows.map((r) => [r.id, r.email]));
 }
+
+/** Platform admins run the platform (add clinics); they are not clinic staff. */
+export async function isPlatformAdmin(registry: SqlClient, platformUserId: string): Promise<boolean> {
+  const { rows } = await registry.query<{ ok: boolean }>(
+    `SELECT is_platform_admin AND status = 'active' AS ok FROM platform_users WHERE id = $1`,
+    [platformUserId],
+  );
+  return rows[0]?.ok === true;
+}
+
+/** Command line only (pnpm db:admin:grant). Returns false when nobody has that email. */
+export async function setPlatformAdmin(registry: SqlClient, email: string, admin: boolean): Promise<boolean> {
+  const { rows } = await registry.query(`UPDATE platform_users SET is_platform_admin = $2, updated_at = now() WHERE email = $1 RETURNING id`, [
+    email.trim().toLowerCase(),
+    admin,
+  ]);
+  return rows.length > 0;
+}

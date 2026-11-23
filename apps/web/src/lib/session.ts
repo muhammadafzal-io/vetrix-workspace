@@ -4,8 +4,8 @@
 import "server-only";
 import { cache } from "react";
 import { cookies, headers } from "next/headers";
-import { redirect } from "next/navigation";
-import { listLocations, loadStaffAccess, membershipsFor, type LocationSummary } from "@vetrix/db/runtime";
+import { notFound, redirect } from "next/navigation";
+import { isPlatformAdmin, listLocations, loadStaffAccess, membershipsFor, type LocationSummary } from "@vetrix/db/runtime";
 import { trace, traced, type Permission } from "@vetrix/domain";
 import { auth } from "./auth";
 import { resolveStaffContext, type StaffContext, type StaffContextResult } from "./staff-context";
@@ -76,4 +76,16 @@ export const requireShell = cache(async (): Promise<ShellContext> => {
   const permissions = ctx.access.locations.get(location.id) ?? new Set<Permission>();
   trace("auth", "lib/session.ts › requireShell", `active location ${location.name}, ${permissions.size} permission(s) → the page may render`);
   return { ...ctx, locations, location, permissions };
+});
+
+/**
+ * For the admin dashboard (/admin): people who run Vetrix, granted with
+ * `pnpm db:admin:grant`. Anyone else gets "not found", so the page is not
+ * even revealed. Clinic staff roles never grant this.
+ */
+export const requirePlatformAdmin = cache(async (): Promise<{ platformUserId: string; email: string }> => {
+  const session = await getSession();
+  if (!session) redirect("/sign-in?next=/admin");
+  if (!(await isPlatformAdmin(tenancy().registry, session.user.id))) notFound();
+  return { platformUserId: session.user.id, email: session.user.email };
 });

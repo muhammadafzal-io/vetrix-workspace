@@ -7,6 +7,7 @@
 //   pnpm db:seed:sample --org <slug> [--replace]   sample clinic data (non-production only)
 //   pnpm db:staff:add --org <slug> --email a@b.com --name "Jo Smith" --role owner [--location <id>]
 //   pnpm db:phone:add --org <slug> --number +15555550100 [--location <id>]   route a Twilio number to a location
+//   pnpm db:admin:grant --email you@example.com [--revoke]   platform admin: may add clinics from the Clinics page
 // Output never includes passwords: only host and database names.
 import { parseArgs } from "node:util";
 import { Pool } from "@neondatabase/serverless";
@@ -16,7 +17,7 @@ import { getVeterinaryPack, veterinaryRawPack } from "@vetrix/pack";
 import { publishPack } from "./packs";
 import { seedSampleClinic } from "./seed/sample-clinic";
 import { syncRoleCatalogue, upsertStaffMember } from "./access";
-import { addOrganizationMember, ensurePlatformUser } from "./members";
+import { addOrganizationMember, ensurePlatformUser, setPlatformAdmin } from "./members";
 import { isRoleKey, ROLE_KEYS } from "@vetrix/domain";
 import { assignPhoneNumber } from "./phone-numbers";
 import { listTenantDatabases, recordTenantMigrations, registerTenant, setTenantStatus, type TenantDatabase } from "./tenants";
@@ -101,7 +102,11 @@ async function migrate(argv: string[]): Promise<void> {
   report("registry", url, "registry", result);
 
   await withClient(url, async (registry) => {
-    const tenants = (await listTenantDatabases(registry)).filter((t) => t.status !== "suspended");
+    const all = await listTenantDatabases(registry);
+    for (const t of all.filter((t) => t.database_ref.startsWith("pending:"))) {
+      console.log(`- clinic ${t.organization_slug}: still being set up (no database yet); skipped`);
+    }
+    const tenants = all.filter((t) => t.status !== "suspended" && !t.database_ref.startsWith("pending:"));
     if (tenants.length === 0) console.log("No clinic databases registered yet. Add one with pnpm db:tenant:add.");
     let failed = 0;
     for (const tenant of tenants) {
@@ -162,6 +167,10 @@ async function status(): Promise<void> {
   });
   if (tenants.length === 0) console.log("No clinic databases registered yet.");
   for (const t of tenants) {
+    if (t.database_ref.startsWith("pending:")) {
+      console.log(`- clinic ${t.organization_slug} [${t.status}]: no database yet (setup not finished)`);
+      continue;
+    }
     await show(`clinic ${t.organization_slug} [${t.status}, ${t.region}]`, resolveDatabaseRef(t.database_ref), "clinic");
   }
 }
@@ -287,6 +296,16 @@ async function phoneAdd(args: string[]) {
   });
 }
 
+async function adminGrant(args: string[]) {
+  const { values } = parseArgs({ args, options: { email: { type: "string" }, revoke: { type: "boolean", default: false } } });
+  if (!values.email) throw new Error("Usage: pnpm db:admin:grant --email you@example.com [--revoke]");
+  await withClient(registryUrl(), async (registry) => {
+    const found = await setPlatformAdmin(registry, values.email!, !values.revoke);
+    if (!found) throw new Error(`Nobody with the email ${values.email} has a Vetrix account yet`);
+    console.log(values.revoke ? `✓ ${values.email} is no longer a platform admin` : `✓ ${values.email} is a platform admin: they can open the admin dashboard at /admin`);
+  });
+}
+
 const [command, ...args] = process.argv.slice(2);
 // pnpm forwards the "--" separator; drop it so flags parse normally.
 const rest = args.filter((arg) => arg !== "--");
@@ -298,11 +317,12 @@ const commands: Record<string, () => Promise<void>> = {
   "seed:sample": () => seedSample(rest),
   "staff:add": () => staffAdd(rest),
   "phone:add": () => phoneAdd(rest),
+  "admin:grant": () => adminGrant(rest),
 };
 
 const run = command ? commands[command] : undefined;
 if (!run) {
-  console.error(`Unknown command "${command ?? ""}". Use: migrate, tenant:add, status, packs:publish, seed:sample, staff:add, phone:add`);
+  console.error(`Unknown command "${command ?? ""}". Use: migrate, tenant:add, status, packs:publish, seed:sample, staff:add, phone:add, admin:grant`);
   process.exit(1);
 }
 run().catch((error: unknown) => {

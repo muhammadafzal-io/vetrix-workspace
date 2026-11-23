@@ -9,7 +9,7 @@
 // - A database with tables but no record (built by hand) is refused, unless
 //   adoptExisting is set AND its schema is identical to what the files build.
 import { createHash } from "node:crypto";
-import { readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -24,7 +24,26 @@ export interface Migration {
 import type { SqlClient } from "./sql-client";
 export type { SqlClient } from "./sql-client";
 
-export const MIGRATIONS_ROOT = fileURLToPath(new URL("../../../db/migrations", import.meta.url));
+/**
+ * The db/migrations folder. From source (CLI, tests) it sits next to this
+ * package; inside a Next.js build this file has moved, so the folder is found
+ * from the working directory instead (the build copies it in: next.config.ts).
+ * MIGRATIONS_DIR overrides both.
+ */
+export function migrationsRoot(env: Record<string, string | undefined> = process.env): string {
+  const candidates = [
+    env.MIGRATIONS_DIR,
+    // From source: packages/db/src -> repository root. (Not `new URL("..", import.meta.url)`:
+    // the Next.js bundler would try to bundle that folder and fail.)
+    path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../db/migrations"),
+    path.join(process.cwd(), "db/migrations"),
+    path.join(process.cwd(), "../../db/migrations"),
+  ].filter((c): c is string => Boolean(c));
+  const found = candidates.find((c) => existsSync(path.join(c, "clinic")) && existsSync(path.join(c, "registry")));
+  if (!found) throw new MigrationError("The db/migrations folder was not found. Set MIGRATIONS_DIR to its path.");
+  return found;
+}
+
 
 /** A table that only exists in one kind of database. */
 const MARKER_TABLE: Record<MigrationTarget, string> = {
@@ -47,7 +66,7 @@ export function checksumOf(sql: string): string {
   return createHash("sha256").update(sql).digest("hex");
 }
 
-export function loadMigrations(target: MigrationTarget, root = MIGRATIONS_ROOT): Migration[] {
+export function loadMigrations(target: MigrationTarget, root = migrationsRoot()): Migration[] {
   const dir = path.join(root, target);
   const files = readdirSync(dir)
     .filter((f) => f.endsWith(".sql"))

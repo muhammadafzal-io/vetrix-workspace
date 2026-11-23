@@ -6,7 +6,7 @@ import { useEffect, useState } from "react";
 import { Command } from "cmdk";
 import * as Dialog from "@radix-ui/react-dialog";
 import * as Menu from "@radix-ui/react-dropdown-menu";
-import { Building2, Check, ChevronsUpDown, LogOut, MapPin, Menu as MenuIcon, PawPrint, Search, Users, X } from "lucide-react";
+import { Building2, Check, ChevronsUpDown, LogOut, MapPin, Menu as MenuIcon, PawPrint, Search, ShieldCheck, Users, X } from "lucide-react";
 import type { Permission } from "@vetrix/domain";
 import { BrandBackdrop, LogoOnDark } from "@/components/vetrix/brand-backdrop";
 import { Logo } from "@/components/vetrix/logo";
@@ -23,6 +23,8 @@ export interface ShellProps {
   locations: { id: string; name: string }[];
   permissions: Permission[];
   sandbox: boolean;
+  /** Runs the platform (pnpm db:admin:grant): the account menu links to Clinics. */
+  platformAdmin?: boolean;
   children: React.ReactNode;
 }
 
@@ -140,7 +142,7 @@ async function signOut(router: ReturnType<typeof useRouter>) {
   router.refresh();
 }
 
-function UserMenu({ user, organization, organizationCount }: Pick<ShellProps, "user" | "organization" | "organizationCount">) {
+function UserMenu({ user, organization, organizationCount, platformAdmin }: Pick<ShellProps, "user" | "organization" | "organizationCount" | "platformAdmin">) {
   const router = useRouter();
   return (
     <Menu.Root>
@@ -166,6 +168,14 @@ function UserMenu({ user, organization, organizationCount }: Pick<ShellProps, "u
               <Link href="/choose-organization" className="flex cursor-pointer items-center gap-2 rounded-sm px-2.5 py-2 text-small outline-none data-[highlighted]:bg-muted">
                 <Building2 className="size-4" aria-hidden />
                 Switch clinic
+              </Link>
+            </Menu.Item>
+          )}
+          {platformAdmin && (
+            <Menu.Item asChild>
+              <Link href="/admin" className="flex cursor-pointer items-center gap-2 rounded-sm px-2.5 py-2 text-small outline-none data-[highlighted]:bg-muted">
+                <ShieldCheck className="size-4" aria-hidden />
+                Admin dashboard
               </Link>
             </Menu.Item>
           )}
@@ -273,11 +283,18 @@ function CommandMenu({
   );
 }
 
-export function AppShell({ user, organization, organizationCount, location, locations, permissions, sandbox, children }: ShellProps) {
+export function AppShell({ user, organization, organizationCount, location, locations, permissions, sandbox, platformAdmin, children }: ShellProps) {
   const pathname = usePathname();
   const [searchOpen, setSearchOpen] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
-  const groups = visibleNav(new Set(permissions));
+  // Platform admins also get the admin dashboard in the sidebar and ⌘K. It is
+  // a separate area (/admin) for running Vetrix, not part of this clinic.
+  const groups: NavGroup[] = [
+    ...visibleNav(new Set(permissions)),
+    ...(platformAdmin
+      ? [{ label: "Platform", items: [{ href: "/admin", label: "Admin dashboard", icon: ShieldCheck, keywords: ["clinics", "super admin", "platform"] }] }]
+      : []),
+  ];
   const current = findNavItem(pathname);
   const tabs = MOBILE_TABS.map((href) => groups.flatMap((g) => g.items).find((i) => i.href === href)).filter(
     (i): i is NonNullable<typeof i> => Boolean(i),
@@ -348,7 +365,7 @@ export function AppShell({ user, organization, organizationCount, location, loca
               Sandbox
             </span>
           )}
-          <UserMenu user={user} organization={organization} organizationCount={organizationCount} />
+          <UserMenu user={user} organization={organization} organizationCount={organizationCount} platformAdmin={platformAdmin} />
         </header>
 
         <main id="main" className="mx-auto w-full max-w-7xl px-4 pb-28 pt-6 sm:px-6 lg:pb-10">

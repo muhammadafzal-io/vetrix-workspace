@@ -1,7 +1,9 @@
 import { AppShell } from "@/features/shell/app-shell";
+import { isPlatformAdmin } from "@vetrix/db/runtime";
 import { getMessagingMode } from "@/lib/env";
 import { trace } from "@vetrix/domain";
 import { getSession, requireShell } from "@/lib/session";
+import { tenancy } from "@/lib/tenancy";
 
 export const dynamic = "force-dynamic";
 
@@ -20,6 +22,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
       locations={shell.locations.map((l) => ({ id: l.id, name: l.name }))}
       permissions={[...shell.permissions]}
       sandbox={getMessagingMode() === "sandbox"}
+      platformAdmin={await isPlatformAdmin(tenancy().registry, shell.platformUserId)}
     >
       {children}
     </AppShell>

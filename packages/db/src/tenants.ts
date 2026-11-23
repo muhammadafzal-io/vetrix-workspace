@@ -96,3 +96,31 @@ export async function recordTenantMigrations(
     [tenantDatabaseId, outcome.schemaVersion],
   );
 }
+
+export interface PlatformOverview {
+  clinics: number;
+  active: number;
+  settingUp: number;
+  suspended: number;
+  /** Setups that stopped with an error, or active clinics whose invite failed. */
+  needsAttention: number;
+  people: number;
+  admins: number;
+  addedLast30Days: number;
+}
+
+/** Numbers for the admin dashboard. Read-only; safe on a pool. */
+export async function platformOverview(registry: SqlClient): Promise<PlatformOverview> {
+  const { rows } = await registry.query<Record<keyof PlatformOverview, number>>(
+    `SELECT
+       (SELECT count(*) FROM tenant_databases)::int AS clinics,
+       (SELECT count(*) FROM tenant_databases WHERE status = 'active')::int AS active,
+       (SELECT count(*) FROM tenant_databases WHERE status IN ('provisioning', 'migrating'))::int AS "settingUp",
+       (SELECT count(*) FROM tenant_databases WHERE status = 'suspended')::int AS suspended,
+       (SELECT count(*) FROM tenant_databases WHERE last_error IS NOT NULL)::int AS "needsAttention",
+       (SELECT count(*) FROM platform_users WHERE status = 'active')::int AS people,
+       (SELECT count(*) FROM platform_users WHERE is_platform_admin AND status = 'active')::int AS admins,
+       (SELECT count(*) FROM tenant_databases WHERE created_at > now() - interval '30 days')::int AS "addedLast30Days"`,
+  );
+  return rows[0]!;
+}

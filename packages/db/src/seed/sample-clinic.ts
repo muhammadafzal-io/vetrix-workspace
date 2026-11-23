@@ -3,12 +3,13 @@
 // recorded as an import job, with every source row in import_rows.
 //
 // Weekdays use 0 = Sunday ... 6 = Saturday (Postgres EXTRACT(DOW)).
-import { normalizePhone, ONLINE_DEFAULT_SERVICES } from "@vetrix/domain";
+import { normalizePhone } from "@vetrix/domain";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { isTaskService, type Pack } from "@vetrix/pack";
+import type { Pack } from "@vetrix/pack";
 import type { SqlClient } from "../migrations";
 import { readCsv } from "./csv";
+import { installPackDefaults } from "../pack-defaults";
 
 export const SAMPLE_DATA_DIR = fileURLToPath(new URL("../../../../docs/test-data", import.meta.url));
 
@@ -160,39 +161,8 @@ export async function seedSampleClinic(client: SqlClient, pack: Pack, options: S
     }
   }
 
-  // Services from the pack (task-only entries such as refills are not booked).
-  const settings: Record<string, boolean> = { telehealth_enabled: false };
-  const serviceIds = new Map<string, { id: string; duration: number }>();
-  for (const s of pack.services.services) {
-    if (isTaskService(s)) continue;
-    const setting = (s as { enabled_by_setting?: string }).enabled_by_setting;
-    const id = await one(
-      `INSERT INTO services (location_id, pack_service_id, name, category, duration_min, buffer_before_min, buffer_after_min,
-         provider_role, room_type, requires_doctor_on_premises, drop_off, drop_off_window, fasting_required,
-         requires_preop_bloodwork, prerequisites, price_low_usd, price_high_usd, bookable_by_ai, active, bookable_online)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20) RETURNING id`,
-      [
-        locationId, s.id, s.name, s.category, s.duration_min, s.buffer_before_min ?? 0, s.buffer_after_min,
-        s.provider_role, s.room_type, s.requires_doctor_on_premises, s.drop_off, s.drop_off_window ?? null,
-        s.fasting_required, s.requires_preop_bloodwork, JSON.stringify(s.prerequisites),
-        s.price_range_usd[0], s.price_range_usd[1], s.bookable_by_ai, setting ? (settings[setting] ?? false) : true, ONLINE_DEFAULT_SERVICES.has(s.id),
-      ],
-    );
-    serviceIds.set(s.id, { id, duration: s.duration_min });
-    for (const sp of s.species) await q(`INSERT INTO service_species VALUES ($1, $2)`, [id, sp]);
-    for (const k of s.required_skills) await q(`INSERT INTO service_skills VALUES ($1, $2)`, [id, k]);
-    for (const e of s.equipment) await q(`INSERT INTO service_equipment (service_id, equipment_type) VALUES ($1, $2)`, [id, e]);
-  }
-  for (const r of pack.retention.rules) {
-    await q(`INSERT INTO reminder_rules (location_id, pack_rule_id) VALUES ($1, $2)`, [locationId, r.id]);
-  }
-  for (const v of pack.retention.vaccines) {
-    await q(
-      `INSERT INTO vaccine_types (id, name, species, default_interval_months, core) VALUES ($1, $2, $3, $4, $5)
-       ON CONFLICT (id) DO NOTHING`,
-      [v.id, v.name, v.species.join(","), v.default_interval_months, v.core],
-    );
-  }
+  // Services, reminder rules and vaccine types from the pack (shared with new clinics).
+  const serviceIds = await installPackDefaults(client, pack, locationId);
 
   // Import job: every source row is kept in import_rows.
   const jobId = await one(`INSERT INTO import_jobs (location_id, status) VALUES ($1, 'importing') RETURNING id`, [locationId]);
