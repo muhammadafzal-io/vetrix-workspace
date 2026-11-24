@@ -5,7 +5,8 @@ import "server-only";
 import { cache } from "react";
 import { cookies, headers } from "next/headers";
 import { notFound, redirect } from "next/navigation";
-import { isPlatformAdmin, listLocations, loadStaffAccess, membershipsFor, type LocationSummary } from "@vetrix/db/runtime";
+import { isPlatformAdmin, listAllLocations, loadStaffAccess, membershipsFor, type LocationSummary } from "@vetrix/db/runtime";
+import type { SqlClient } from "@vetrix/db/runtime";
 import { trace, traced, type Permission } from "@vetrix/domain";
 import { auth } from "./auth";
 import { resolveStaffContext, type StaffContext, type StaffContextResult } from "./staff-context";
@@ -18,6 +19,9 @@ import { tenancy } from "./tenancy";
 export const ACTIVE_ORG_COOKIE = "vetrix.org";
 /** Location chosen by people who work at several; checked like the organization. */
 export const ACTIVE_LOCATION_COOKIE = "vetrix.location";
+
+/** All locations of a clinic database, loaded once per request. */
+const clinicLocations = cache((clinic: SqlClient) => listAllLocations(clinic));
 
 /** The Better Auth session for this request, or null. Cached per request. */
 export const getSession = cache(async () =>
@@ -41,7 +45,13 @@ export const getStaffContext = cache(async (): Promise<StaffContextResult | null
     async () => resolveStaffContext(
     {
       memberships: (userId) => membershipsFor(t.registry, userId),
-      clinicFor: async (organizationId) => (await t.clinicPool(organizationId)).pool,
+      clinicFor: async (organizationId) => {
+        const pool = (await t.clinicPool(organizationId)).pool;
+        // Start loading the locations now, alongside the access check below;
+        // requireShell picks up the same promise. Its error surfaces there.
+        clinicLocations(pool).catch(() => undefined);
+        return pool;
+      },
       loadAccess: loadStaffAccess,
     },
     { userId: session.user.id, activeOrganizationId: (await cookies()).get(ACTIVE_ORG_COOKIE)?.value },
@@ -69,7 +79,7 @@ export interface ShellContext extends StaffContext {
 /** requireStaff plus the active location and its permissions. Cached per request. */
 export const requireShell = cache(async (): Promise<ShellContext> => {
   const ctx = await requireStaff();
-  const locations = await listLocations(ctx.clinic, [...ctx.access.locations.keys()]);
+  const locations = (await clinicLocations(ctx.clinic)).filter((l) => ctx.access.locations.has(l.id));
   const chosen = (await cookies()).get(ACTIVE_LOCATION_COOKIE)?.value;
   const location = locations.find((l) => l.id === chosen) ?? locations[0];
   if (!location) redirect("/no-access");

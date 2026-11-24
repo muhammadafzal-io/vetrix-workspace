@@ -10,6 +10,16 @@ export interface LocationSummary {
 }
 
 /** Locations in this clinic database, limited to the ids given (what the person may open). */
+/**
+ * Every location in this clinic database (a group has at most a few). The app
+ * shell loads this while it checks the person's access, then keeps only the
+ * locations they may open, so the two queries run at the same time.
+ */
+export async function listAllLocations(client: SqlClient): Promise<LocationSummary[]> {
+  const { rows } = await client.query<LocationSummary>(`SELECT id, name, timezone, status FROM locations ORDER BY name`);
+  return rows;
+}
+
 export async function listLocations(client: SqlClient, ids: string[]): Promise<LocationSummary[]> {
   if (ids.length === 0) return [];
   const { rows } = await client.query<LocationSummary>(

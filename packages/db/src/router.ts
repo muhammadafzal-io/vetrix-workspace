@@ -135,6 +135,13 @@ function logQueries(pool: Pool, name: string): void {
   };
 }
 
+/**
+ * How long an unused connection stays open. pg's default is 10 s, so a person
+ * who clicks every 15 s paid a fresh connection (1-2 s) on every click. Five
+ * minutes matches Neon's scale-to-zero window, so a quiet clinic still sleeps.
+ */
+export const POOL_IDLE_MS = 5 * 60_000;
+
 /** Production router: registry over Neon, one small pool per clinic database. */
 export function createNeonTenantRouter(registryUrl: string, env: Record<string, string | undefined> = process.env) {
   // An idle connection the database drops (restart, password change, network)
@@ -145,14 +152,14 @@ export function createNeonTenantRouter(registryUrl: string, env: Record<string, 
     if (env.DB_QUERY_LOG === "1" || env.FLOW_TRACE === "1") logQueries(pool, name);
     return pool;
   };
-  const registry = quiet(new Pool({ connectionString: registryUrl, max: 5 }), "registry");
+  const registry = quiet(new Pool({ connectionString: registryUrl, max: 5, idleTimeoutMillis: POOL_IDLE_MS }), "registry");
   const router = createTenantRouter<Pool>({
     env,
     lookup: async (organization) => {
       const { rows } = await registry.query<TenantDatabase>(TENANT_LOOKUP_SQL, [organization]);
       return rows[0];
     },
-    createPool: (connectionString) => quiet(new Pool({ connectionString, max: 5 }), "clinic"),
+    createPool: (connectionString) => quiet(new Pool({ connectionString, max: 5, idleTimeoutMillis: POOL_IDLE_MS }), "clinic"),
   });
   return {
     registry,
