@@ -3,16 +3,18 @@ import type { NextConfig } from "next";
 
 // Basic protections on every response. A full script CSP needs nonces and is
 // added with the first deployment; these headers are safe today.
-const sharedHeaders = [
+// The microphone is off everywhere except the two places people talk to the
+// AI front desk out loud: the staff test console and the booking widget.
+const sharedHeaders = (microphone: boolean) => [
   { key: "X-Content-Type-Options", value: "nosniff" },
   { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
-  { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=(), payment=()" },
+  { key: "Permissions-Policy", value: `camera=(), microphone=${microphone ? "(self)" : "()"}, geolocation=(), payment=()` },
   ...(process.env.NODE_ENV === "production"
     ? [{ key: "Strict-Transport-Security", value: "max-age=63072000; includeSubDomains; preload" }]
     : []),
 ];
-const securityHeaders = [
-  ...sharedHeaders,
+const securityHeaders = (microphone: boolean) => [
+  ...sharedHeaders(microphone),
   { key: "X-Frame-Options", value: "DENY" },
   { key: "Content-Security-Policy", value: "frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'" },
 ];
@@ -23,8 +25,9 @@ const nextConfig: NextConfig = {
     return [
       // The booking widget (/w/...) can be framed by the clinic's own sites:
       // middleware sets its frame-ancestors from the clinic's settings.
-      { source: "/((?!w/).*)", headers: securityHeaders },
-      { source: "/w/:path*", headers: sharedHeaders },
+      { source: "/((?!w/|calls/sandbox$).*)", headers: securityHeaders(false) },
+      { source: "/calls/sandbox", headers: securityHeaders(true) },
+      { source: "/w/:path*", headers: sharedHeaders(true) },
     ];
   },
   reactStrictMode: true,

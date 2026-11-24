@@ -1,10 +1,11 @@
 "use client";
 
 // The public booking widget: book a routine visit, chat with the AI front
-// desk, or call. Runs as a page (/w/<org>) and inside a frame on the clinic's
+// desk (typed, or out loud in the browser: features/front-desk/browser-voice.ts),
+// or call. Runs as a page (/w/<org>) and inside a frame on the clinic's
 // website (?embed=1). Clinic branding only, in its own colour scheme
 // (.clinic-widget in globals.css; a clinic can pass its own colour).
-import { useEffect, useRef, useState, useTransition } from "react";
+import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import {
   AlertTriangle,
   ArrowLeft,
@@ -19,24 +20,28 @@ import {
   Loader2,
   MapPin,
   MessageSquareText,
+  Mic,
   PawPrint,
-  Phone,
   Plus,
   Rabbit,
   Send,
   Sparkles,
   Stethoscope,
   UserRound,
+  Volume2,
+  VolumeX,
   X,
   type LucideIcon,
 } from "lucide-react";
-import { BrandBackdrop, Highlight } from "@/components/vetrix/brand-backdrop";
+import { BrandBackdrop } from "@/components/vetrix/brand-backdrop";
 import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { CheckboxField } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
+import { browserVoiceSupport, useSpokenTurns } from "@/features/front-desk/browser-voice";
+import { AssistantAvatar, statusText, type AssistantStatus } from "./avatar";
 import {
   addPetAction,
   bookAction,
@@ -66,7 +71,8 @@ export interface WidgetClinicProps {
   er: { name: string; phone: { href: string; text: string }; address: string } | null;
 }
 
-type Intent = "book" | "chat";
+/** What the visitor came for: book, chat by typing, or talk out loud. */
+type Intent = "book" | "chat" | "talk";
 type Booked = Extract<BookResult, { ok: true }>;
 type Step =
   | { name: "home" }
@@ -78,7 +84,8 @@ type Step =
   | { name: "service"; pet: WidgetPet }
   | { name: "time"; pet: WidgetPet; service: WidgetService }
   | { name: "done"; pet: WidgetPet; service: WidgetService; booked: Booked }
-  | { name: "chat" };
+  /** `first`: a message typed on the home screen, sent as soon as the chat opens. */
+  | { name: "chat"; voice?: boolean; first?: string };
 
 const SPECIES_LABEL: Record<string, string> = { dog: "Dog", cat: "Cat", rabbit: "Rabbit", bird: "Bird", reptile: "Reptile", other: "Other" };
 const SPECIES_ICON: Record<string, LucideIcon> = { dog: Dog, cat: Cat, rabbit: Rabbit, bird: Bird };
@@ -121,6 +128,8 @@ export function BookingWidget({ clinic, embed }: { clinic: WidgetClinicProps; em
   const [me, setMe] = useState<WidgetMe | null>(null);
   const [species, setSpecies] = useState<string[]>([]);
   const [notice, setNotice] = useState<string | null>(null);
+  // A message typed on the home screen waits through the phone check, then is sent.
+  const [firstMessage, setFirstMessage] = useState<string | null>(null);
   const scroller = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -153,8 +162,9 @@ export function BookingWidget({ clinic, embed }: { clinic: WidgetClinicProps; em
     setNotice("For your security, please confirm your number again.");
     setStep({ name: "phone", intent });
   };
-  const start = (intent: Intent) => {
-    if (token) go(intent === "chat" ? { name: "chat" } : me ? { name: "pets" } : { name: "new" });
+  const start = (intent: Intent, first?: string) => {
+    setFirstMessage(first ?? null);
+    if (token) go(intent !== "book" ? { name: "chat", voice: intent === "talk", first } : me ? { name: "pets" } : { name: "new" });
     else go({ name: "phone", intent });
   };
   const close = () => window.parent?.postMessage({ type: "booking-widget:close" }, "*");
@@ -169,7 +179,7 @@ export function BookingWidget({ clinic, embed }: { clinic: WidgetClinicProps; em
         !embed && "sm:h-[min(760px,calc(100dvh-5rem))] sm:rounded-2xl sm:shadow-2xl",
       )}
     >
-      {!isHome && (
+      {!isHome && step.name !== "chat" && (
         <header className="relative z-10 border-b bg-card">
           <div className="flex h-14 items-center gap-1 px-2">
             {step.name !== "done" && history.length > 0 ? (
@@ -179,19 +189,18 @@ export function BookingWidget({ clinic, embed }: { clinic: WidgetClinicProps; em
             ) : (
               <span className="w-2" aria-hidden />
             )}
+            <AssistantAvatar size="sm" className="mr-1" />
             <div className="min-w-0 flex-1">
               <p className="truncate font-semibold leading-tight">{STEP_TITLE[step.name]}</p>
-              <p className="truncate text-caption text-muted-foreground">{clinic.name}</p>
+              <p className="truncate text-caption text-muted-foreground">
+                {clinic.aiName} · {clinic.name}
+              </p>
             </div>
-            {embed ? (
+            {embed && (
               <IconButton label="Close" onClick={close}>
                 <X className="size-5" aria-hidden />
               </IconButton>
-            ) : clinic.phone ? (
-              <a href={clinic.phone.href} aria-label={`Call ${clinic.phone.text}`} className="flex size-10 items-center justify-center rounded-full text-muted-foreground hover:bg-muted hover:text-foreground">
-                <Phone className="size-[18px]" aria-hidden />
-              </a>
-            ) : null}
+            )}
           </div>
           {progress !== undefined && (
             <div className="absolute inset-x-0 bottom-0 h-0.5 translate-y-full" role="progressbar" aria-label={`Step ${progress} of 4`} aria-valuemin={1} aria-valuemax={4} aria-valuenow={progress}>
@@ -202,14 +211,15 @@ export function BookingWidget({ clinic, embed }: { clinic: WidgetClinicProps; em
       )}
 
       <div ref={scroller} className="flex flex-1 flex-col overflow-y-auto overscroll-contain">
-        {isHome && <HomeHero clinic={clinic} embed={embed} onClose={close} />}
         <main
           key={step.name}
-          className={cn("cw-in relative flex-1", step.name === "chat" ? "flex flex-col" : "grid content-start gap-5 px-4 py-5")}
+          className={cn("cw-in relative flex-1", step.name === "chat" || isHome ? "flex flex-col" : "grid content-start gap-5 px-4 py-5")}
         >
           {notice && <Alert variant="warning">{notice}</Alert>}
 
-          {step.name === "home" && <Home clinic={clinic} onBook={() => start("book")} onChat={() => start("chat")} />}
+          {step.name === "home" && (
+            <AssistantHome clinic={clinic} embed={embed} onClose={close} onBook={() => start("book")} onChat={(first) => start("chat", first)} onTalk={() => start("talk")} />
+          )}
 
           {step.name === "phone" && (
             <PhoneStep {...ctx} intent={step.intent} onSent={(mobile, display, sandboxCode) => go({ name: "code", intent: step.intent, mobile, display, sandboxCode })} />
@@ -227,7 +237,8 @@ export function BookingWidget({ clinic, embed }: { clinic: WidgetClinicProps; em
                 setSpecies(sp);
                 setHistory([{ name: "home" }]);
                 setNotice(null);
-                setStep(step.intent === "chat" ? { name: "chat" } : m ? { name: "pets" } : { name: "new" });
+                setStep(step.intent !== "book" ? { name: "chat", voice: step.intent === "talk", first: firstMessage ?? undefined } : m ? { name: "pets" } : { name: "new" });
+                setFirstMessage(null);
               }}
             />
           )}
@@ -278,7 +289,19 @@ export function BookingWidget({ clinic, embed }: { clinic: WidgetClinicProps; em
 
           {step.name === "done" && <Done clinic={clinic} service={step.service} booked={step.booked} onAnother={restart} />}
 
-          {step.name === "chat" && token && <Chat {...ctx} token={token} aiName={clinic.aiName} clinic={clinic} onExpired={() => expired("chat")} />}
+          {step.name === "chat" && token && (
+            <Chat
+              {...ctx}
+              token={token}
+              aiName={clinic.aiName}
+              clinic={clinic}
+              voice={Boolean(step.voice)}
+              first={step.first}
+              onExpired={() => expired(step.voice ? "talk" : "chat")}
+              onBack={history.length > 0 ? back : undefined}
+              onClose={embed ? close : undefined}
+            />
+          )}
         </main>
       </div>
 
@@ -396,94 +419,181 @@ const partOfDay = (timezone: string) => {
   return h < 12 ? "Good morning" : h < 18 ? "Good afternoon" : "Good evening";
 };
 
-/** The navy hero, as on the staff Overview: date and clinic, greeting with the gold underline. */
-function HomeHero({ clinic, embed, onClose }: { clinic: WidgetClinicProps; embed: boolean; onClose: () => void }) {
-  const date = new Intl.DateTimeFormat("en-US", { weekday: "long", month: "long", day: "numeric", timeZone: clinic.timezone }).format(Date.now());
+/** One message from the assistant, with its face beside the first of a group. */
+function AssistantBubble({ children, avatar, status = "online" }: { children: React.ReactNode; avatar: boolean; status?: AssistantStatus }) {
   return (
-    <header className="relative shrink-0 overflow-hidden px-5 pb-9 pt-5 text-white">
-      <BrandBackdrop waves="42%" />
-      <div className="relative flex items-start justify-between gap-3">
-        <p className="text-small font-medium text-white/70">
-          {date} · {clinic.name}
-        </p>
-        {embed && (
-          <IconButton label="Close" onClick={onClose} className="-mr-2 -mt-2 text-white/70 hover:bg-white/10 hover:text-white">
-            <X className="size-5" aria-hidden />
-          </IconButton>
-        )}
-      </div>
-      <div className="relative mt-3 grid gap-2">
-        <h1 className="vx-fade-up text-h1">
-          {partOfDay(clinic.timezone)}, <Highlight>welcome</Highlight>
-        </h1>
-        <p className="flex items-center gap-2 text-white/75">
-          <span className={cn("size-2 rounded-full", clinic.open ? "bg-accent" : "bg-white/40")} aria-hidden />
-          {clinic.open ? "We're open now." : "We're closed right now."} Book a visit, ask {clinic.aiName}, or call us.
-        </p>
-      </div>
-    </header>
+    <div className="cw-in flex items-end gap-2">
+      {avatar ? <AssistantAvatar size="sm" status={status} /> : <span className="w-8 shrink-0" aria-hidden />}
+      <div className="max-w-[82%] whitespace-pre-line rounded-2xl rounded-bl-md border bg-card px-3.5 py-2.5 text-body shadow-sm">{children}</div>
+    </div>
   );
 }
 
-function Home({ clinic, onBook, onChat }: { clinic: WidgetClinicProps; onBook: () => void; onChat: () => void }) {
-  const er = !clinic.open ? clinic.er : null;
-  const emergency = er ? er.phone : clinic.phone;
+/** Talking out loud needs a browser that can listen and speak (not Firefox). */
+function useCanTalk() {
+  const [can, setCan] = useState(false);
+  useEffect(() => {
+    const v = browserVoiceSupport();
+    setCan(v.listen && v.speak);
+  }, []);
+  return can;
+}
+
+/**
+ * The first screen: the assistant greets the visitor like a chat, with quick
+ * replies and a message box (typing starts a chat after the phone check; the
+ * mic starts a spoken one). The emergency line stays visible.
+ */
+function AssistantHome({
+  clinic,
+  embed,
+  onClose,
+  onBook,
+  onChat,
+  onTalk,
+}: {
+  clinic: WidgetClinicProps;
+  embed: boolean;
+  onClose: () => void;
+  onBook: () => void;
+  onChat: (first?: string) => void;
+  onTalk: () => void;
+}) {
+  const canTalk = useCanTalk();
+  const [draft, setDraft] = useState("");
+  const chip = "rounded-full border border-primary/30 bg-card px-3.5 py-2 text-small font-medium text-foreground shadow-sm transition-colors hover:border-primary hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
   return (
-    <div className="grid gap-5">
-      {emergency && (
-        <a
-          href={emergency.href}
-          role="note"
-          className="flex items-center gap-3 rounded-xl border border-destructive/30 bg-danger-soft px-4 py-3 text-small font-medium text-foreground shadow-card transition-colors hover:border-destructive/60"
-        >
-          <AlertTriangle className="size-5 shrink-0 text-destructive" aria-hidden />
-          <span className="flex-1">
-            Emergency? {er ? `We're closed: call ${er.name}` : "Don't book online, call us now"} on {emergency.text}.
-          </span>
-          <ArrowRight className="size-4 text-muted-foreground" aria-hidden />
-        </a>
-      )}
-
-      <section aria-labelledby="w-help" className="grid gap-3">
-        <h2 id="w-help" className="text-h3">
-          How can we help?
-        </h2>
-        <ul className="grid gap-2">
-          <li>
-            <Row
-              icon={CalendarCheck2}
-              iconClass="bg-primary text-primary-foreground"
-              title="Book a visit"
-              detail="Checkups, vaccines, rechecks and first visits"
-              onClick={onBook}
-            />
-          </li>
-          <li>
-            <Row icon={MessageSquareText} title={`Chat with ${clinic.aiName}`} detail="Questions, or a pet who isn't well" onClick={onChat} />
-          </li>
-          {clinic.phone && (
-            <li>
-              <a href={clinic.phone.href} className="flex w-full items-center gap-3 rounded-lg border bg-card p-3.5 shadow-card transition-colors hover:border-primary/40">
-                <span className="flex size-9 shrink-0 items-center justify-center rounded-full bg-secondary text-primary">
-                  <Phone className="size-4" aria-hidden />
-                </span>
-                <span className="grid min-w-0 flex-1">
-                  <span className="font-medium">Call us</span>
-                  <span className="text-small text-muted-foreground">{clinic.phone.text}</span>
-                </span>
-                <ArrowRight className="size-4 text-muted-foreground" aria-hidden />
-              </a>
-            </li>
+    <div className="flex flex-1 flex-col">
+      <header className="relative shrink-0 overflow-hidden px-5 pb-6 pt-5 text-white">
+        <BrandBackdrop waves="40%" />
+        <div className="relative flex items-start justify-between gap-3">
+          <div className="flex min-w-0 items-center gap-3.5">
+            <AssistantAvatar size="lg" />
+            <div className="grid min-w-0">
+              <p className="truncate text-h3 font-semibold leading-tight">{clinic.aiName}</p>
+              <p className="truncate text-small text-white/80">AI assistant · {clinic.name}</p>
+              <p className="mt-1 flex items-center gap-1.5 text-caption text-white/75">
+                <span className="size-1.5 rounded-full bg-emerald-400" aria-hidden />
+                {statusText("online", clinic.open)}
+              </p>
+            </div>
+          </div>
+          {embed && (
+            <IconButton label="Close" onClick={onClose} className="-mr-2 -mt-2 text-white/70 hover:bg-white/10 hover:text-white">
+              <X className="size-5" aria-hidden />
+            </IconButton>
           )}
-        </ul>
-      </section>
+        </div>
+      </header>
 
-      {clinic.address && (
-        <p className="flex items-center justify-center gap-1.5 text-caption text-muted-foreground">
-          <MapPin className="size-3.5" aria-hidden /> {clinic.address}
-        </p>
-      )}
+      <div className="grid flex-1 content-start gap-2 px-4 py-5" aria-live="polite">
+        <AssistantBubble avatar>
+          {partOfDay(clinic.timezone)}! I&apos;m {clinic.aiName}, the AI assistant for {clinic.name}.
+        </AssistantBubble>
+        <AssistantBubble avatar={false}>I can book a visit, answer your questions, or help if your pet isn&apos;t feeling well. What can I do for you?</AssistantBubble>
+        <div className="cw-in flex flex-wrap gap-2 pl-10 pt-2">
+          <button type="button" className={chip} onClick={onBook}>
+            <CalendarCheck2 className="mr-1.5 inline size-4 text-primary" aria-hidden />
+            Book a visit
+          </button>
+          <button type="button" className={chip} onClick={() => onChat("My pet seems unwell")}>
+            <Stethoscope className="mr-1.5 inline size-4 text-destructive" aria-hidden />
+            My pet seems unwell
+          </button>
+          <button type="button" className={chip} onClick={() => onChat()}>
+            <MessageSquareText className="mr-1.5 inline size-4 text-primary" aria-hidden />
+            Ask a question
+          </button>
+          {canTalk && (
+            <button type="button" className={chip} onClick={onTalk}>
+              <Mic className="mr-1.5 inline size-4 text-primary" aria-hidden />
+              Talk out loud
+            </button>
+          )}
+        </div>
+      </div>
+
+      <div className="sticky bottom-0 grid gap-2 border-t bg-card px-3 pb-3 pt-2.5">
+        <Emergency clinic={clinic} />
+        <Composer
+          value={draft}
+          onChange={setDraft}
+          onSend={() => draft.trim() && onChat(draft.trim())}
+          placeholder={`Message ${clinic.aiName}…`}
+          mic={canTalk ? { listening: false, onClick: onTalk } : null}
+        />
+        <p className="text-center text-[11px] text-muted-foreground">We confirm your mobile number with a code first. {clinic.aiName} is an AI; staff see every conversation.</p>
+      </div>
     </div>
+  );
+}
+
+/** The message box: text, an optional mic (talk out loud) and send. */
+function Composer({
+  value,
+  onChange,
+  onSend,
+  placeholder,
+  disabled,
+  mic,
+  inputRef,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  onSend: () => void;
+  placeholder: string;
+  disabled?: boolean;
+  mic: { listening: boolean; onClick: () => void; disabled?: boolean } | null;
+  inputRef?: React.Ref<HTMLInputElement>;
+}) {
+  return (
+    <form
+      onSubmit={(e) => {
+        e.preventDefault();
+        onSend();
+      }}
+      className={cn("flex items-center gap-1.5 rounded-full border bg-background py-1 pl-4 pr-1 shadow-sm transition-colors focus-within:border-primary", mic?.listening && "border-primary")}
+    >
+      <label htmlFor="w-compose" className="sr-only">
+        Message
+      </label>
+      <input
+        id="w-compose"
+        ref={inputRef}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        maxLength={500}
+        autoComplete="off"
+        disabled={disabled}
+        readOnly={mic?.listening}
+        className="h-10 min-w-0 flex-1 bg-transparent text-body outline-none placeholder:text-muted-foreground disabled:opacity-60"
+      />
+      {mic && (
+        <button
+          type="button"
+          onClick={mic.onClick}
+          disabled={mic.disabled}
+          aria-label={mic.listening ? "Done speaking" : "Talk out loud"}
+          aria-pressed={mic.listening}
+          className={cn(
+            "relative flex size-10 shrink-0 items-center justify-center rounded-full transition-colors disabled:opacity-50",
+            mic.listening ? "bg-destructive text-white" : "text-muted-foreground hover:bg-muted hover:text-foreground",
+          )}
+        >
+          {mic.listening && <span className="cw-ping absolute inset-0 rounded-full bg-destructive/40" aria-hidden />}
+          <Mic className="relative size-5" aria-hidden />
+        </button>
+      )}
+      <button
+        type="submit"
+        disabled={disabled || !value.trim() || mic?.listening}
+        aria-label="Send"
+        className="flex size-10 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground transition-opacity disabled:opacity-40"
+      >
+        <Send className="size-[18px]" aria-hidden />
+      </button>
+    </form>
   );
 }
 
@@ -503,7 +613,7 @@ function PhoneStep({ org, loc, intent, onSent }: { org: string; loc: string; int
   return (
     <form onSubmit={submit} className="grid gap-5">
       <StepHeading
-        title={intent === "chat" ? "First, your mobile number" : "Let's get you booked"}
+        title={intent !== "book" ? "First, your mobile number" : "Let's get you booked"}
         body="We'll text you a 6-digit code to confirm it's you. New to us? That's fine too."
       />
       <div className="grid gap-2">
@@ -1214,20 +1324,70 @@ function Done({ clinic, service, booked, onAnother }: { clinic: WidgetClinicProp
 
 const STARTERS = ["My pet seems sick", "Book a checkup", "Question about my pet's meds"];
 
-function Chat({ org, loc, token, aiName, clinic, onExpired }: { org: string; loc: string; token: string; aiName: string; clinic: WidgetClinicProps; onExpired: () => void }) {
+/**
+ * The conversation with the AI assistant, typed or out loud. The mic sits in
+ * the message box; the speaker button turns the assistant's voice on or off.
+ * Every reply comes from the same front desk as phone calls and texts.
+ */
+function Chat({
+  org,
+  loc,
+  token,
+  aiName,
+  clinic,
+  voice: startTalking,
+  first,
+  onExpired,
+  onBack,
+  onClose,
+}: {
+  org: string;
+  loc: string;
+  token: string;
+  aiName: string;
+  clinic: WidgetClinicProps;
+  /** Start with the voice on (the visitor chose "Talk out loud"). */
+  voice: boolean;
+  /** A message typed on the home screen, sent as soon as the chat opens. */
+  first?: string;
+  onExpired: () => void;
+  onBack?: () => void;
+  /** Inside the clinic's website: close the widget. */
+  onClose?: () => void;
+}) {
   const [callId, setCallId] = useState<string | null>(null);
-  const [lines, setLines] = useState<{ who: "ai" | "me"; text: string }[]>([]);
+  const [lines, setLines] = useState<{ id: number; who: "ai" | "me"; text: string }[]>([]);
   const [text, setText] = useState("");
   const [ended, setEnded] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pending, start] = useTransition();
   const end = useRef<HTMLDivElement>(null);
   const idRef = useRef<string | null>(null);
+  const lineId = useRef(0);
+  const sentFirst = useRef(false);
+  const nextLine = (who: "ai" | "me", t: string) => ({ id: ++lineId.current, who, text: t });
+  const canTalk = useCanTalk();
+  const [talking, setTalking] = useState(startTalking);
+
+  /** Sends one message and shows the replies. */
+  const send = async (id: string, body: string) => {
+    const r = await chatSendAction(org, loc, token, id, body);
+    if (!r.ok) {
+      if (r.reason === "session" && r.error.startsWith("For your security")) return onExpired();
+      return setError(r.error);
+    }
+    setLines((l) => [...l, ...r.replies.map((t) => nextLine("ai", t))]);
+    if (r.ended) {
+      setEnded(true);
+      idRef.current = null;
+    }
+  };
 
   const begin = () =>
     start(async () => {
       setError(null);
       setEnded(false);
+      spoken.reset();
       const r = await chatStartAction(org, loc, token);
       if (!r.ok) {
         if (r.reason === "session") return onExpired();
@@ -1235,13 +1395,31 @@ function Chat({ org, loc, token, aiName, clinic, onExpired }: { org: string; loc
       }
       idRef.current = r.callId;
       setCallId(r.callId);
-      setLines(r.replies.map((t) => ({ who: "ai" as const, text: t })));
+      setLines(r.replies.map((t) => nextLine("ai", t)));
+      // The message typed on the home screen goes first.
+      if (first && !sentFirst.current) {
+        sentFirst.current = true;
+        setLines((l) => [...l, nextLine("me", first)]);
+        await send(r.callId, first);
+      }
     });
 
+  // Start once per screen. React's development mode mounts twice to catch
+  // bugs; the conversation must not start twice or end in between, so it
+  // ends only when the screen is really gone (checked a moment later).
+  const started = useRef(false);
+  const mounted = useRef(false);
   useEffect(() => {
-    begin();
+    mounted.current = true;
+    if (!started.current) {
+      started.current = true;
+      begin();
+    }
     return () => {
-      if (idRef.current) void chatEndAction(org, loc, token, idRef.current);
+      mounted.current = false;
+      setTimeout(() => {
+        if (!mounted.current && idRef.current) void chatEndAction(org, loc, token, idRef.current);
+      }, 0);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -1250,101 +1428,119 @@ function Chat({ org, loc, token, aiName, clinic, onExpired }: { org: string; loc
   }, [lines.length, pending]);
 
   const say = (body: string) => {
-    if (!body || !callId) return;
+    const id = idRef.current;
+    if (!body || !id) return;
     setText("");
-    setLines((l) => [...l, { who: "me", text: body }]);
+    setError(null);
+    setLines((l) => [...l, nextLine("me", body)]);
     start(async () => {
-      const r = await chatSendAction(org, loc, token, callId, body);
-      if (!r.ok) {
-        if (r.reason === "session" && r.error.startsWith("For your security")) return onExpired();
-        return setError(r.error);
-      }
-      setLines((l) => [...l, ...r.replies.map((t) => ({ who: "ai" as const, text: t }))]);
-      if (r.ended) {
-        setEnded(true);
-        idRef.current = null;
-      }
+      await send(id, body);
     });
+  };
+  const sayRef = useRef(say);
+  sayRef.current = say;
+
+  const spoken = useSpokenTurns({
+    active: talking && Boolean(callId),
+    replies: useMemo(() => lines.filter((l) => l.who === "ai").map((l) => ({ id: l.id, text: l.text })), [lines]),
+    busy: pending,
+    ended,
+    onHeard: (heard) => sayRef.current(heard),
+  });
+
+  const status: AssistantStatus = pending ? "thinking" : spoken.state === "speaking" ? "speaking" : spoken.state === "listening" ? "listening" : "online";
+
+  const mic = () => {
+    if (!talking) {
+      // Turning the voice on: earlier messages are not read out again.
+      spoken.skipExisting();
+      setTalking(true);
+      spoken.listenNow();
+    } else spoken.mic();
   };
 
   return (
     <div className="flex flex-1 flex-col">
-      <div className="flex items-center gap-2.5 border-b bg-card px-4 py-2.5">
-        <span className="relative flex size-9 items-center justify-center rounded-full bg-secondary font-semibold text-primary">
-          {aiName.charAt(0)}
-          <span className="absolute -bottom-0.5 -right-0.5 size-3 rounded-full border-2 border-card bg-success" aria-hidden />
-        </span>
-        <div className="grid">
-          <span className="text-small font-semibold">{aiName}</span>
-          <span className="text-caption text-muted-foreground">{clinic.name} front desk</span>
+      <div className="flex items-center gap-2.5 border-b bg-card py-2 pl-2 pr-3">
+        {onBack ? (
+          <IconButton label="Back" onClick={onBack}>
+            <ArrowLeft className="size-5" aria-hidden />
+          </IconButton>
+        ) : (
+          <span className="w-1.5" aria-hidden />
+        )}
+        <AssistantAvatar size="md" status={status} />
+        <div className="grid min-w-0 flex-1" aria-live="polite">
+          <span className="truncate text-small font-semibold">
+            {aiName} <span className="font-normal text-muted-foreground">· {clinic.name}</span>
+          </span>
+          <span className={cn("truncate text-caption", status === "online" ? "text-muted-foreground" : "font-medium text-primary")}>{statusText(status, clinic.open)}</span>
         </div>
+        {canTalk && (
+          <IconButton label={talking ? `Mute ${aiName}'s voice` : `Hear ${aiName}'s replies`} onClick={() => (talking ? setTalking(false) : (spoken.skipExisting(), setTalking(true)))}>
+            {talking ? <Volume2 className="size-5 text-primary" aria-hidden /> : <VolumeX className="size-5" aria-hidden />}
+          </IconButton>
+        )}
+        {onClose && (
+          <IconButton label="Close" onClick={onClose}>
+            <X className="size-5" aria-hidden />
+          </IconButton>
+        )}
       </div>
-      <div className="border-b bg-danger-soft/60 px-4 py-2">
+      <div className="border-b bg-danger-soft/50 px-4 py-1.5">
         <Emergency clinic={clinic} />
       </div>
+
       <div className="grid flex-1 content-start gap-2 p-4" aria-live="polite">
-        {lines.map((l, i) => (
-          <div
-            key={i}
-            className={cn(
-              "cw-in max-w-[85%] whitespace-pre-line rounded-2xl px-3.5 py-2 text-body shadow-sm",
-              l.who === "ai" ? "justify-self-start rounded-bl-md border bg-card" : "justify-self-end rounded-br-md bg-primary text-primary-foreground",
-            )}
-          >
-            {l.text}
-          </div>
-        ))}
+        {lines.map((l, i) =>
+          l.who === "ai" ? (
+            <AssistantBubble key={l.id} avatar={lines[i - 1]?.who !== "ai"}>
+              {l.text}
+            </AssistantBubble>
+          ) : (
+            <div key={l.id} className="cw-in max-w-[80%] justify-self-end whitespace-pre-line rounded-2xl rounded-br-md bg-primary px-3.5 py-2.5 text-body text-primary-foreground shadow-sm">
+              {l.text}
+            </div>
+          ),
+        )}
         {pending && (
-          <div className="justify-self-start rounded-2xl rounded-bl-md border bg-card px-3.5 py-3" role="status" aria-label={`${aiName} is typing`}>
-            <span className="flex gap-1">
+          <div className="flex items-end gap-2" role="status" aria-label={`${aiName} is typing`}>
+            <AssistantAvatar size="sm" status="thinking" />
+            <span className="flex gap-1 rounded-2xl rounded-bl-md border bg-card px-3.5 py-3">
               {[0, 1, 2].map((i) => (
                 <span key={i} className="size-1.5 animate-bounce rounded-full bg-muted-foreground/60 motion-reduce:animate-none" style={{ animationDelay: `${i * 120}ms` }} />
               ))}
             </span>
           </div>
         )}
-        {callId && lines.length <= 1 && !pending && (
-          <div className="flex flex-wrap gap-2 pt-1">
-            {STARTERS.map((s) => (
-              <button key={s} type="button" onClick={() => say(s)} className="rounded-full border border-primary/30 bg-secondary px-3 py-1.5 text-small font-medium text-secondary-foreground hover:bg-secondary/70">
-                {s}
+        {callId && lines.length <= 1 && !pending && !first && (
+          <div className="flex flex-wrap gap-2 pl-10 pt-1">
+            {STARTERS.map((st) => (
+              <button key={st} type="button" onClick={() => say(st)} className="rounded-full border border-primary/30 bg-card px-3 py-1.5 text-small font-medium shadow-sm hover:border-primary hover:bg-secondary">
+                {st}
               </button>
             ))}
           </div>
         )}
         {error && <Alert variant="error">{error}</Alert>}
+        {spoken.error && <Alert variant="error">{spoken.error}</Alert>}
         <div ref={end} />
       </div>
+
       <div className="sticky bottom-0 border-t bg-card px-3 py-3">
         {ended ? (
-          <Button variant="outline" className="h-11 w-full rounded-xl" onClick={begin}>
-            <MessageSquareText aria-hidden /> Start a new chat
+          <Button variant="outline" className="h-11 w-full rounded-full" onClick={begin}>
+            <MessageSquareText aria-hidden /> Start a new conversation
           </Button>
         ) : (
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              say(text.trim());
-            }}
-            className="flex items-center gap-2"
-          >
-            <label htmlFor="w-chat" className="sr-only">
-              Message
-            </label>
-            <Input
-              id="w-chat"
-              value={text}
-              onChange={(e) => setText(e.target.value)}
-              placeholder={`Message ${aiName}…`}
-              maxLength={500}
-              autoComplete="off"
-              disabled={!callId}
-              className="h-11 rounded-full px-4 sm:h-11"
-            />
-            <Button type="submit" size="icon" className="size-11 shrink-0 rounded-full" disabled={!text.trim() || pending || !callId} aria-label="Send">
-              <Send aria-hidden />
-            </Button>
-          </form>
+          <Composer
+            value={spoken.state === "listening" ? spoken.interim : text}
+            onChange={setText}
+            onSend={() => say(text.trim())}
+            placeholder={spoken.state === "listening" ? "Listening… go ahead" : spoken.state === "speaking" ? `${aiName} is speaking… tap the mic to talk` : `Message ${aiName}…`}
+            disabled={!callId}
+            mic={canTalk ? { listening: spoken.state === "listening", onClick: mic, disabled: pending || !callId } : null}
+          />
         )}
       </div>
     </div>

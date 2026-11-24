@@ -70,6 +70,8 @@ export const SCRIPTS = {
   recordingDisclosure: "This call may be recorded for quality and training.",
   greeting: "Thanks for calling {{clinic_name}}, this is {{ai_name}}. How can I help you and your pet today?",
   textGreeting: "Thanks for texting {{clinic_name}}, this is {{ai_name}}. How can I help you and your pet today?",
+  /** Website chat (typed or spoken in the booking widget). */
+  webGreeting: "Hi, this is {{ai_name}} at {{clinic_name}}. How can I help you and your pet today?",
   fasting:
     "Because this is a procedure under anaesthesia, {{pet_name}} should have no food after midnight the night before. Water is fine. Drop-off is between {{drop_off_window}}.",
   deceased: "I am so sorry for your loss. I will make sure you do not receive any more reminders for {{pet_name}}.",
@@ -82,6 +84,7 @@ export const SCRIPTS = {
   anythingElse: "Is there anything else I can help with for {{patient_name}} or any of your other pets?",
   goodbyeBooked: "Thanks for calling {{clinic_name}}. We'll see {{patient_name}} on {{date_spoken}}.",
   goodbyeBookedText: "Thanks for texting {{clinic_name}}. We'll see {{patient_name}} on {{date_spoken}}.",
+  goodbyeBookedWeb: "Thanks for contacting {{clinic_name}}. We'll see {{patient_name}} on {{date_spoken}}.",
   /**
    * PROVISIONAL: the pack has no booking confirmation template (product gap,
    * flagged to the product owner). Kept short and transactional.
@@ -148,6 +151,8 @@ export interface FrontDeskContext {
   /** The caller's number in E.164, when known. */
   callerNumber: string | null;
   channel: "voice" | "sms";
+  /** A website chat (booking widget): written like a text, but not "thanks for texting". */
+  web?: boolean;
   rules: TriageRules & { after_hours_er?: { sms_template: string } };
   /** Keyed by pack service id. */
   services: Record<string, ServiceInfo>;
@@ -367,7 +372,7 @@ export function startConversation(ctx: FrontDeskContext, caller: CallerRecord | 
   const replies =
     ctx.channel === "voice"
       ? [SCRIPTS.recordingDisclosure, fillScript(SCRIPTS.greeting, values)]
-      : [fillScript(SCRIPTS.textGreeting, values)];
+      : [fillScript(ctx.web ? SCRIPTS.webGreeting : SCRIPTS.textGreeting, values)];
   return { state, replies };
 }
 
@@ -1068,7 +1073,7 @@ class Turn {
         const death = deathMentioned(text);
         if (s.phase === "anything_else" && intent === "unknown" && !match && !death && (isGoodbye(text) || isNo(text))) {
           const last = s.booked.at(-1);
-          this.say(last ? fillScript(this.ctx.channel === "sms" ? SCRIPTS.goodbyeBookedText : SCRIPTS.goodbyeBooked, { clinic_name: this.ctx.clinicName, patient_name: last.petName, date_spoken: spokenDate(last.start, this.ctx.timezone) }) : `Thanks for contacting ${this.ctx.clinicName}. Take care!`);
+          this.say(last ? fillScript(this.ctx.channel === "sms" ? (this.ctx.web ? SCRIPTS.goodbyeBookedWeb : SCRIPTS.goodbyeBookedText) : SCRIPTS.goodbyeBooked, { clinic_name: this.ctx.clinicName, patient_name: last.petName, date_spoken: spokenDate(last.start, this.ctx.timezone) }) : `Thanks for contacting ${this.ctx.clinicName}. Take care!`);
           s.phase = "ended";
           return;
         }

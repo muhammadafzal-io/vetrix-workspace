@@ -46,7 +46,7 @@ export default async function SandboxPage() {
           </Link>
         }
       />
-      <SandboxConsole aiName={aiName} callers={callers} actions={{ start: startSandboxAction, send: sendSandboxAction, end: endSandboxAction }} />
+      <SandboxConsole aiName={aiName} callers={callers} actions={{ start: startSandboxAction, send: sendSandboxAction, end: endSandboxAction }} allowVoice />
     </>
   );
 }

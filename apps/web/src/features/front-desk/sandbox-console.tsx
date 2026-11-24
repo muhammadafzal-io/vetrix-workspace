@@ -1,11 +1,13 @@
 "use client";
 
-// Talk to Riley as a client would, by text or as a typed phone call. Every
+// Talk to Riley as a client would, by text or as a phone call. A call can be
+// typed, or spoken in the browser (microphone in, Riley's voice out: see
+// browser-voice.ts); either way the same front desk answers. Every
 // conversation is Sandbox: bookings and tasks are real records in this
 // clinic, but no text or call reaches a phone.
-import { useEffect, useRef, useState, useTransition } from "react";
+import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import Link from "next/link";
-import { ArrowUpRight, Info, Loader2, MessageSquareText, PhoneCall, PhoneOff, RotateCcw, SendHorizontal, UserPlus } from "lucide-react";
+import { ArrowUpRight, Info, Loader2, MessageSquareText, Mic, MicOff, PhoneCall, PhoneOff, RotateCcw, SendHorizontal, UserPlus, Volume2 } from "lucide-react";
 import type { TriageLevel } from "@vetrix/domain";
 import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -13,6 +15,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
 import type { ConsoleResult } from "./actions";
+import { browserVoiceSupport, useSpokenTurns } from "./browser-voice";
 import { SandboxBadge, TriageBadge } from "./labels";
 
 export interface QuickCaller {
@@ -47,12 +50,15 @@ export function SandboxConsole({
   callers,
   actions,
   showCallsLink = true,
+  allowVoice = false,
 }: {
   aiName: string;
   callers: QuickCaller[];
   actions: ConsoleActions;
   /** Staff can open the finished conversation under Calls; the public page cannot. */
   showCallsLink?: boolean;
+  /** Offer speaking to Riley in the browser on phone calls (staff console). */
+  allowVoice?: boolean;
 }) {
   const [channel, setChannel] = useState<"sms" | "voice">("sms");
   const [number, setNumber] = useState(callers[0]?.display ?? "");
@@ -65,6 +71,22 @@ export function SandboxConsole({
   const [pending, startTransition] = useTransition();
   const endRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  // ---------- Speaking in the browser ----------
+  const [support, setSupport] = useState({ listen: false, speak: false });
+  useEffect(() => setSupport(browserVoiceSupport()), []);
+  const canTalk = allowVoice && support.listen && support.speak;
+  const [talkChoice, setTalkChoice] = useState(true);
+  const talking = channel === "voice" && canTalk && talkChoice;
+  const callLive = Boolean(callId) && talking;
+  const sendRef = useRef<(m: string) => void>(() => {});
+  const voice = useSpokenTurns({
+    active: callLive,
+    replies: useMemo(() => lines.filter((l) => l.speaker === "ai").map((l) => ({ id: l.id, text: l.body })), [lines]),
+    busy: pending,
+    ended,
+    onHeard: (heard) => sendRef.current(heard),
+  });
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
@@ -82,8 +104,9 @@ export function SandboxConsole({
       setLines([]);
       setLevel("routine");
       setEnded(false);
+      voice.reset();
       add("ai", r.replies);
-      setTimeout(() => inputRef.current?.focus(), 50);
+      if (!talking) setTimeout(() => inputRef.current?.focus(), 50);
     });
   }
 
@@ -103,8 +126,11 @@ export function SandboxConsole({
     });
   }
 
+  sendRef.current = send;
+
   function hangUp() {
     if (!callId) return;
+    voice.stop();
     startTransition(async () => {
       await actions.end(callId);
       add("system", [channel === "voice" ? "Caller hung up." : "Conversation closed."]);
@@ -113,6 +139,7 @@ export function SandboxConsole({
   }
 
   function reset() {
+    voice.reset();
     setCallId(null);
     setLines([]);
     setEnded(false);
@@ -151,9 +178,24 @@ export function SandboxConsole({
                 </button>
               ))}
             </div>
-            {channel === "voice" && (
-              <p className="text-caption text-muted-foreground">You type what the caller would say. Live voice comes with the Azure key and the voice service.</p>
-            )}
+            {channel === "voice" &&
+              (canTalk ? (
+                <label className="flex items-start gap-2.5 rounded-lg border px-3 py-2.5 text-small">
+                  <input type="checkbox" className="mt-0.5 size-4 accent-[var(--primary)]" checked={talkChoice} onChange={(e) => setTalkChoice(e.currentTarget.checked)} />
+                  <span className="grid gap-0.5">
+                    <span className="font-medium">Talk out loud</span>
+                    <span className="text-caption text-muted-foreground">
+                      Speak into your microphone and hear {aiName} answer, like a real call. The browser asks for the microphone the first time. Untick to type instead.
+                    </span>
+                  </span>
+                </label>
+              ) : (
+                <p className="text-caption text-muted-foreground">
+                  {allowVoice
+                    ? "You type what the caller would say. To talk out loud, use Chrome, Edge or Safari (this browser has no speech recognition)."
+                    : "You type what the caller would say."}
+                </p>
+              ))}
           </div>
 
           <div className="grid gap-2">
@@ -167,7 +209,7 @@ export function SandboxConsole({
           {error && <Alert variant="error">{error}</Alert>}
           <Button onClick={start} disabled={pending || !number.trim()} className="w-full sm:w-auto sm:justify-self-start">
             {pending ? <Loader2 className="animate-spin" aria-hidden /> : channel === "voice" ? <PhoneCall aria-hidden /> : <MessageSquareText aria-hidden />}
-            {channel === "voice" ? `Call ${aiName}` : `Text ${aiName}`}
+            {channel === "voice" ? (talking ? `Call ${aiName} (talk out loud)` : `Call ${aiName}`) : `Text ${aiName}`}
           </Button>
         </section>
 
@@ -259,6 +301,7 @@ export function SandboxConsole({
       </div>
 
       {error && <Alert variant="error" className="m-4 mb-0">{error}</Alert>}
+      {voice.error && <Alert variant="error" className="m-4 mb-0">{voice.error}</Alert>}
 
       {ended ? (
         <footer className="flex flex-wrap items-center justify-between gap-3 border-t px-4 py-3">
@@ -276,6 +319,34 @@ export function SandboxConsole({
         </footer>
       ) : (
         <footer className="grid gap-3 border-t px-4 py-3">
+          {callLive && (
+            <div className="flex items-center gap-3 rounded-lg border bg-muted/40 px-3 py-2.5" aria-live="polite">
+              <Button
+                type="button"
+                size="sm"
+                variant={voice.state === "listening" ? "default" : "outline"}
+                onClick={voice.mic}
+                disabled={pending}
+                aria-label={voice.state === "listening" ? "Done speaking" : "Speak"}
+                className={cn("size-10 shrink-0 rounded-full p-0", voice.state === "listening" && "animate-pulse")}
+              >
+                {voice.state === "listening" ? <Mic aria-hidden /> : <MicOff aria-hidden />}
+              </Button>
+              <p className="min-w-0 flex-1 text-small">
+                {pending ? (
+                  <span className="text-muted-foreground">{aiName} is thinking…</span>
+                ) : voice.state === "speaking" ? (
+                  <span className="flex items-center gap-1.5 text-muted-foreground">
+                    <Volume2 className="size-4" aria-hidden /> {aiName} is speaking. Tap the mic to interrupt.
+                  </span>
+                ) : voice.state === "listening" ? (
+                  voice.interim ? <span>{voice.interim}</span> : <span className="text-muted-foreground">Listening… speak now. Tap the mic when you finish.</span>
+                ) : (
+                  <span className="text-muted-foreground">Tap the mic to speak, or type below.</span>
+                )}
+              </p>
+            </div>
+          )}
           {lines.length <= 1 && (
             <div className="flex flex-wrap gap-1.5">
               {SUGGESTIONS.map((s) => (

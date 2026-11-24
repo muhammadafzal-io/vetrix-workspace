@@ -85,7 +85,8 @@
       }
       frame.title = label;
       frame.src = src;
-      frame.setAttribute("allow", "clipboard-write");
+      // Microphone: clients can talk to the AI front desk out loud (the browser still asks them first).
+      frame.setAttribute("allow", "clipboard-write; microphone");
       document.body.appendChild(frame);
       if (button.parentNode) document.body.appendChild(button);
       // Let the frame paint before sliding in.

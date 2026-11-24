@@ -566,7 +566,7 @@ export async function startFrontDesk(pool: TransactionPool, input: StartInput, n
   return withTransaction(pool, async (db) => {
     const setup = await loadSetup(db, input.locationId, now);
     const caller = mobile ? await findCaller(db, input.locationId, mobile, setup.today) : null;
-    const ctx: FrontDeskContext = { ...setup.ctx, callerNumber: mobile, channel: talkChannel(input.channel) };
+    const ctx: FrontDeskContext = { ...setup.ctx, callerNumber: mobile, channel: talkChannel(input.channel), web: input.channel === "web" };
     const { state, replies } = startConversation(ctx, caller);
     const { rows } = await db.query<{ id: string }>(
       `INSERT INTO calls (location_id, client_id, direction, caller_number, after_hours, started_at, channel, sandbox, state, summary, provider_call_id)
@@ -621,7 +621,7 @@ async function runTurn(
     const call = rows[0];
     if (!call) throw new NotFoundError("Conversation", input.callId);
     const setup = await loadSetup(db, input.locationId, now);
-    const ctx: FrontDeskContext = { ...setup.ctx, callerNumber: call.caller_number, channel: talkChannel(call.channel) };
+    const ctx: FrontDeskContext = { ...setup.ctx, callerNumber: call.caller_number, channel: talkChannel(call.channel), web: call.channel === "web" };
     const out = newNotes();
     const port = createPort(db, { locationId: input.locationId, callId: input.callId, setup, sandbox: call.sandbox, channel: call.channel, classify: options.classify, claimBase: options.claimBase, ai: options.ai }, out);
     trace("db", HERE, `saved state loaded (phase "${call.state.phase}") + clinic setup (hours, services, rules) → run the engine`);

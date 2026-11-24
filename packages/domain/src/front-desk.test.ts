@@ -492,6 +492,14 @@ describe("chat booking: days and times the client asks for", () => {
     expect(log.searches[0]!.after).toBe(at("2026-11-19", "12:00") - 1);
     expect(r.last).toMatch(/^Thanks for texting Main Veterinary Clinic/);
   });
+
+  it("greets and says goodbye on the website without 'thanks for texting'", async () => {
+    expect(startConversation(ctx({ channel: "sms", web: true }), sam).replies).toEqual(["Hi, this is Riley at Main Veterinary Clinic. How can I help you and your pet today?"]);
+    expect(startConversation(ctx({ channel: "sms" }), sam).replies[0]).toMatch(/^Thanks for texting/);
+    const { port } = fakePort();
+    const r = await talk(ctx({ channel: "sms", web: true }), port, sam, ["Can Max come in Thursday afternoon for a nail trim?", "first", "no thanks"]);
+    expect(r.last).toMatch(/^Thanks for contacting Main Veterinary Clinic/);
+  });
 });
 
 describe("chat booking never gets stuck", () => {
