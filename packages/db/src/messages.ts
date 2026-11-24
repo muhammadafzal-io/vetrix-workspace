@@ -190,3 +190,23 @@ export async function queuedMessages(db: SqlClient, locationId: string, limit = 
   );
   return rows;
 }
+
+/**
+ * A queued message that was deliberately not sent (testing with an
+ * allowlist): kept as simulated, exactly like a sandbox message.
+ */
+export async function markMessageSimulated(db: SqlClient, input: { locationId: string; messageId: string }): Promise<void> {
+  await db.query(`UPDATE messages SET status = 'simulated', sent_at = now(), next_attempt_at = NULL WHERE id = $1 AND location_id = $2`, [input.messageId, input.locationId]);
+}
+
+/** A test email (reminder) was sent or refused: kept in the audit log only, never as a client message. */
+export async function logReminderTestSend(db: SqlClient, input: { locationId: string; actor: Actor; step: string; to: string[]; ok: boolean; sender: "clinic" | "provider_test" }): Promise<void> {
+  await writeAudit(db, {
+    locationId: input.locationId,
+    actor: input.actor,
+    action: "reminder.test_sent",
+    entityType: "location",
+    entityId: input.locationId,
+    changes: { step: input.step, to: input.to, ok: input.ok, sender: input.sender },
+  });
+}

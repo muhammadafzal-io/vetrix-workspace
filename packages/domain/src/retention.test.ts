@@ -88,3 +88,42 @@ describe("touch windows", () => {
     expect([touchIsActive(14, -14), touchIsActive(14, -13), touchIsActive(0, 0)]).toEqual([true, false, true]);
   });
 });
+
+describe("email when a text can't go", () => {
+  const rule = { id: "vaccine_due", name: "Vaccine due", species: ["dog"], touches: [{ offset_days: -7, channels: ["sms" as const], template: "t" }] };
+  const base = (client: { smsConsent: boolean; email: string | null }) => {
+    const input = {
+      asOf: "2026-11-24",
+      rules: [rule],
+      patients: [{ id: "p", clientId: "c", name: "Simba", species: "dog", dateOfBirth: null, approxAgeMonths: null, status: "active", lastWellnessAt: null, lastSurgeryAt: null }],
+      clients: [{ id: "c", firstName: "Sam", householdId: null, flags: [], ...client }],
+      vaccines: [{ patientId: "p", vaccineName: "DAPP", dueAt: "2026-11-28" }],
+      prevention: [],
+      noShows: [],
+      booked: [],
+    };
+    return planSends({
+      items: dueReminders(input),
+      patients: input.patients,
+      clients: input.clients,
+      sent: new Set(),
+      templates: { t: "{{clinic_name}}: {{pet_name}} is due. Book: {{booking_link}} Reply STOP to opt out." },
+      merge: { applies_to_rules: [], template_multi: "", windowDays: 14 },
+      values: { clinicName: "Main Veterinary Clinic", aiName: "Riley", clinicPhone: "1", bookingLink: "https://book" },
+    });
+  };
+
+  it("sends a text-only step by email to a client who can't be texted, without the STOP line", () => {
+    const r = base({ smsConsent: false, email: "sam@example.com" });
+    expect(r.plans.map((p) => p.channel)).toEqual(["email"]);
+    expect(r.plans[0]!.body).toBe("Main Veterinary Clinic: Simba is due. Book: https://book");
+    expect(r.skipped).toEqual([]);
+  });
+
+  it("texts (only) a client who can be texted, and skips one with neither", () => {
+    expect(base({ smsConsent: true, email: "sam@example.com" }).plans.map((p) => p.channel)).toEqual(["sms"]);
+    const none = base({ smsConsent: false, email: null });
+    expect(none.plans).toEqual([]);
+    expect(none.skipped).toHaveLength(1);
+  });
+});

@@ -5,7 +5,8 @@
 // and its status updated.
 import { revalidatePath } from "next/cache";
 import { ForbiddenError, isQuietHours, localParts, RuleViolationError, validateOutbound, ValidationError } from "@vetrix/domain";
-import { getClientThread, messagingSettings, numberForLocation, recordOutbound, setMessageResult, withTransaction, type Actor } from "@vetrix/db/runtime";
+import { getClientThread, markMessageSimulated, messagingSettings, numberForLocation, recordOutbound, setMessageResult, withTransaction, type Actor } from "@vetrix/db/runtime";
+import { mayReallySend } from "@/lib/allowlist";
 import { formValues, toActionError, type ActionResult } from "@/lib/action-result";
 import { mailProvider, sendEmail } from "@/lib/email";
 import { getEnv, getMessagingMode } from "@/lib/env";
@@ -38,7 +39,10 @@ export async function sendMessageAction(clientId: string, _: ActionResult | null
       recordOutbound(tx, { locationId: loc, clientId, channel: msg.channel, subject: msg.subject, body: msg.body, sandbox, staffUserId: shell.access.staffUserId, actor }),
     );
 
-    if (!sandbox) {
+    // Testing with MESSAGING_ALLOWLIST: someone not on the list gets nothing (kept as simulated).
+    const held = !sandbox && !mayReallySend(msg.channel === "email" ? { email: client.email } : { phone: client.mobile });
+    if (held) await markMessageSimulated(shell.clinic, { locationId: loc, messageId });
+    if (!sandbox && !held) {
       // Live: send now, after the record is saved, and store the outcome.
       const env = getEnv();
       let ok = false;

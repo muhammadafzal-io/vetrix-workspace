@@ -5,7 +5,19 @@
 // @vetrix/db; these only check permission, read the form and refresh pages.
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import { describeAudience, ForbiddenError, isQuietHours, localParts, validateAudience, validateCampaignRequest, ValidationError, zonedInstant, type Audience, type CampaignChannel, type CopyIssue } from "@vetrix/domain";
+import {
+  describeAudience,
+  fillCampaignMessage,
+  ForbiddenError,
+  isQuietHours,
+  localParts,
+  parseTestRecipients,
+  TEST_SAMPLE,
+  validateAudience,
+  validateCampaignRequest,
+  ValidationError,
+  zonedInstant,
+  type Audience, type CampaignChannel, type CopyIssue } from "@vetrix/domain";
 import {
   approveCampaign,
   audienceOptions,
@@ -14,6 +26,7 @@ import {
   createCampaign,
   forbiddenCampaignTerms,
   getCampaign,
+  logCampaignTestSend,
   previewAudience,
   messagingSettings,
   queuedMessages,
@@ -34,6 +47,9 @@ import { logger } from "@/lib/logger";
 import { clinicToday } from "@/lib/clinic-date";
 import { getEnv, getMessagingMode } from "@/lib/env";
 import { deliverQueued } from "@/lib/outbound";
+import { mailProvider, sendEmail } from "@/lib/email";
+import { createLimiter } from "@/lib/rate-limit";
+import { providerTestSender } from "@/lib/allowlist";
 import { requireShell } from "@/lib/session";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -265,14 +281,18 @@ export async function scheduleAction(id: string, when: string): Promise<ActionRe
           },
         }),
       );
-      if (!sandbox) await deliverQueued({ clinic: shell.clinic, organizationId: shell.organization.organization_id, locationId: loc, clinicName: ms.clinicName, messages: await queuedMessages(shell.clinic, loc) });
+      const d = sandbox ? null : await deliverQueued({ clinic: shell.clinic, organizationId: shell.organization.organization_id, locationId: loc, clinicName: ms.clinicName, messages: await queuedMessages(shell.clinic, loc) });
       refresh(id);
       revalidatePath("/messages");
+      // Live: say what really happened (sent, failed, kept back by MESSAGING_ALLOWLIST).
+      const outcome = d
+        ? `${d.sent} sent${d.failed ? `, ${d.failed} failed` : ""}${d.held ? `, ${d.held} kept as simulated (not on MESSAGING_ALLOWLIST)` : ""}`
+        : `${r.sent} saved (Sandbox: not sent)`;
       return {
         ok: true,
         message: r.finished
-          ? `Done: ${r.sent} message${r.sent === 1 ? "" : "s"} ${sandbox ? "saved (Sandbox: not sent)" : "sent"}, ${r.skipped} skipped.`
-          : `${r.sent} message${r.sent === 1 ? "" : "s"} ${sandbox ? "saved" : "sent"} so far. The rest go out over the next few minutes${isQuietHours(here.minutes, ms.quietStart, ms.quietEnd) ? " (texts after quiet hours)" : ""}.`,
+          ? `Done: ${outcome}, ${r.skipped} skipped.`
+          : `${outcome} so far. The rest go out over the next few minutes${isQuietHours(here.minutes, ms.quietStart, ms.quietEnd) ? " (texts after quiet hours)" : ""}.`,
       };
     }
   } catch (error) {
@@ -304,3 +324,74 @@ export async function cancelAction(id: string): Promise<ActionResult> {
   return { ok: true, message: "Campaign stopped. Nothing more will be sent." };
 }
 
+
+// ---------- Test email ----------
+
+const g = globalThis as unknown as { vetrixCampaignTests?: ReturnType<typeof createLimiter> };
+/** At most 10 test sends per person per 10 minutes. */
+const testLimit = (g.vetrixCampaignTests ??= createLimiter({ limit: 10, windowMs: 10 * 60_000 }));
+
+/**
+ * Sends the campaign's latest email to the addresses staff typed, for real,
+ * marked [TEST], with sample values (Sam; Bella and Max). Works in sandbox
+ * mode too: it is a deliberate test, not a client message. It is not saved as
+ * a message and never counts toward the 7-day limit or the results; the
+ * audit log keeps who sent it where. Until the clinic's sending domain is
+ * verified, development and staging fall back to the email provider's test
+ * sender (which only delivers to the provider account's own address).
+ */
+export async function sendTestEmailAction(id: string, rawTo: string): Promise<ActionResult> {
+  try {
+    const { shell, actor } = await allowed();
+    const to = parseTestRecipients(rawTo);
+    if (!testLimit.take(shell.access.staffUserId)) throw new ValidationError("Too many test emails. Try again in a few minutes.");
+    const env = getEnv();
+    const provider = mailProvider(env);
+    if (!provider || !env.EMAIL_FROM) throw new ValidationError("Email is not set up: add RESEND_API_KEY and EMAIL_FROM.");
+    const loc = shell.location.id;
+    const c = await getCampaign(shell.clinic, loc, campaignId(id));
+    const email = c.content.find((x) => x.channel === "email");
+    if (!email) throw new ValidationError(c.channels.includes("email") ? "Write the email first (step 3)." : "This campaign doesn't send email.");
+    const { clinicName, clinicPhone } = await campaignFacts(shell.clinic, loc, c.goal);
+    const widget = await shell.clinic.query<{ widget_enabled: boolean }>(`SELECT widget_enabled FROM locations WHERE id = $1`, [loc]);
+    const appUrl = env.APP_URL.replace(/\/$/, "");
+    const values = {
+      ...TEST_SAMPLE,
+      clinic_name: clinicName,
+      clinic_phone: clinicPhone ?? "the clinic",
+      booking_link: widget.rows[0]?.widget_enabled ? `${appUrl}/w/${shell.organization.organization_slug}` : `call ${clinicPhone ?? "the clinic"}`,
+    };
+    const subject = `[TEST] ${fillCampaignMessage(email.subject ?? c.name, "email", values)}`;
+    const text = `${fillCampaignMessage(email.body, "email", values)}\n\n--\nThis is a test of the campaign "${c.name}" (version ${email.version}). Clients get their own name, their pets' names and a working unsubscribe link.`;
+
+    // Not production: if the provider refuses the clinic's sender (domain not
+    // verified yet), use its test sender so the test can still be seen.
+    const testSender = providerTestSender(env);
+    let sender: "clinic" | "provider_test" = "clinic";
+    const results: { address: string; ok: boolean; status: number }[] = [];
+    for (const address of to) {
+      let r = await sendEmail({ provider, from: env.EMAIL_FROM, fromName: clinicName }, { to: address, subject, text }).catch(() => ({ ok: false, id: null, status: 0 }));
+      if (!r.ok && r.status === 403 && provider.kind === "resend" && testSender) {
+        sender = "provider_test";
+        r = await sendEmail({ provider, from: testSender, fromName: clinicName }, { to: address, subject, text }).catch(() => ({ ok: false, id: null, status: 0 }));
+      }
+      results.push({ address, ok: r.ok, status: r.status });
+    }
+    const sent = results.filter((r) => r.ok).map((r) => r.address);
+    const failed = results.filter((r) => !r.ok);
+    await logCampaignTestSend(shell.clinic, { locationId: loc, id, actor, to, ok: failed.length === 0, sender });
+    if (sent.length === 0) {
+      return {
+        ok: false,
+        error: failed.some((f) => f.status === 403)
+          ? "The email provider refused it: the sending domain isn't verified yet, and its test sender only delivers to the provider account's own address."
+          : "The test email could not be sent. Check the email settings and try again.",
+      };
+    }
+    const note = sender === "provider_test" ? " (from the email provider's test sender, because your sending domain isn't verified yet)" : "";
+    const partly = failed.length ? ` Not sent to ${failed.map((f) => f.address).join(", ")}.` : "";
+    return { ok: true, message: `Test email sent to ${sent.join(", ")}${note}. Check the inbox (and spam).${partly}` };
+  } catch (error) {
+    return toActionError(error);
+  }
+}

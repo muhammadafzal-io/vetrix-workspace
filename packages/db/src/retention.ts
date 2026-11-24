@@ -218,6 +218,9 @@ export async function runReminders(
   const messages = toSend.map((m) => ({ ...m, id: randomUUID() }));
   const touches: { t: T; messageId: string | null; status: "sent" | "suppressed"; reason: string | null }[] = [
     ...plan.superseded.map((t) => ({ t, messageId: null, status: "suppressed" as const, reason: "superseded by a later reminder" })),
+    // No way to reach the client (no text consent and no email): recorded once, so it
+    // isn't shown as "due" on every run. Staff still see it as not sent.
+    ...plan.skipped.map((x) => ({ t: x.touch, messageId: null, status: "suppressed" as const, reason: x.reason })),
     ...messages.flatMap((m) => m.touches.map((t) => ({ t, messageId: m.id, status: "sent" as const, reason: null }))),
   ];
   const ruleOf = (t: T) => {

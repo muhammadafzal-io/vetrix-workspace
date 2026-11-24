@@ -29,6 +29,10 @@ export const envSchema = z
     // Must be set explicitly in production. Elsewhere it defaults to sandbox,
     // so real messages are only sent when someone deliberately chooses live.
     MESSAGING_MODE: messagingModeSchema.optional(),
+    // Testing real sends safely (dev and staging only; ignored in production):
+    // in live mode, only these emails and mobile numbers really receive client
+    // messages; everything else stays simulated, as in sandbox. Comma-separated.
+    MESSAGING_ALLOWLIST: optional,
 
     // Clinic databases are not listed here: each organization's database is
     // found through the registry (tenant_databases.database_ref).
@@ -116,9 +120,11 @@ export const envSchema = z
     if (!env.RESEND_API_KEY && !env.SENDGRID_API_KEY) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["RESEND_API_KEY"], message: "Required when MESSAGING_MODE is live (or SENDGRID_API_KEY)" });
     }
+    // Testing with MESSAGING_ALLOWLIST outside production (e.g. real emails only):
+    // texting may be left unset; texts to the list then fail with a clear message.
+    const testing = Boolean(env.MESSAGING_ALLOWLIST?.trim()) && (env.NODE_ENV !== "production" || env.APP_STAGE === "staging");
     for (const key of [
-      "TWILIO_ACCOUNT_SID",
-      "TWILIO_AUTH_TOKEN",
+      ...(testing ? [] : (["TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN"] as const)),
       "EMAIL_FROM",
     ] as const) {
       if (!env[key]) {

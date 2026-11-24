@@ -16,6 +16,8 @@ import { AudienceBuilder } from "@/features/campaigns/audience-builder";
 import { BasicsForm } from "@/features/campaigns/basics-form";
 import { ContentEditor } from "@/features/campaigns/content-editor";
 import { SendPanel } from "@/features/campaigns/send-panel";
+import { TestEmailBox } from "@/features/campaigns/test-email";
+import { getSession } from "@/lib/session";
 import { CampaignStatusBadge } from "@/features/campaigns/status-badge";
 import { aiMode } from "@/lib/ai";
 import { clinicToday } from "@/lib/clinic-date";
@@ -29,6 +31,7 @@ const MESSAGE_STATUS: Record<string, string> = { simulated: "Saved (Sandbox)", q
 
 export default async function CampaignPage({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<{ built?: string; rpage?: string; rsize?: string }> }) {
   const shell = await requirePage("campaigns.manage");
+  const session = await getSession();
   const id = assertId((await params).id);
   const sp = await searchParams;
   const built = sp.built;
@@ -161,7 +164,10 @@ export default async function CampaignPage({ params, searchParams }: { params: P
         </Panel>
 
         <Panel title="4 · Approve and send">
-          <SendPanel campaignId={id} status={c.status} ready={ready} sendAtText={sendAtText} sandbox={sandbox} reach={reach} />
+          <div className="grid gap-5">
+            {c.channels.includes("email") && <TestEmailBox campaignId={id} defaultTo={session?.user.email ?? ""} ready={Boolean(latest("email"))} />}
+            <SendPanel campaignId={id} status={c.status} ready={ready} sendAtText={sendAtText} sandbox={sandbox} reach={reach} />
+          </div>
         </Panel>
       </div>
     </>

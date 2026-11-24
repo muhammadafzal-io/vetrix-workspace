@@ -195,7 +195,9 @@ async function loadAudienceData(db: SqlClient, locationId: string, today: string
     db.query<{ id: string; first_name: string; name: string; marketing_consent: boolean; sms_consent: boolean; email: string | null; flags: string[]; last_campaign_at: Date | null }>(
       `SELECT c.id, c.first_name, c.first_name || ' ' || c.last_name AS name, c.marketing_consent, c.sms_consent, c.email,
               coalesce((SELECT array_agg(f.flag) FROM client_flags f WHERE f.client_id = c.id), '{}') AS flags,
-              (SELECT max(r.created_at) FROM campaign_recipients r WHERE r.client_id = c.id AND r.status = 'sent' AND r.campaign_id IS DISTINCT FROM $2::uuid) AS last_campaign_at
+              (SELECT max(r.created_at) FROM campaign_recipients r WHERE r.client_id = c.id AND r.status = 'sent' AND r.campaign_id IS DISTINCT FROM $2::uuid
+                 -- A simulated message (sandbox, or not on the test allowlist) never reached the client.
+                 AND EXISTS (SELECT 1 FROM messages m WHERE m.id = r.message_id AND m.status <> 'simulated')) AS last_campaign_at
        FROM clients c WHERE c.location_id = $1`,
       [locationId, excludeCampaignId ?? null],
     ),
@@ -377,7 +379,8 @@ async function loadCampaignClients(db: SqlClient, clientIds: string[], campaignI
   const { rows } = await db.query<{ id: string; first_name: string; marketing_consent: boolean; sms_consent: boolean; email: string | null; flags: string[]; last_campaign_at: Date | null }>(
     `SELECT c.id, c.first_name, c.marketing_consent, c.sms_consent, c.email,
             coalesce((SELECT array_agg(f.flag) FROM client_flags f WHERE f.client_id = c.id), '{}') AS flags,
-            (SELECT max(r.created_at) FROM campaign_recipients r WHERE r.client_id = c.id AND r.status = 'sent' AND r.campaign_id <> $2) AS last_campaign_at
+            (SELECT max(r.created_at) FROM campaign_recipients r WHERE r.client_id = c.id AND r.status = 'sent' AND r.campaign_id <> $2
+               AND EXISTS (SELECT 1 FROM messages m WHERE m.id = r.message_id AND m.status <> 'simulated')) AS last_campaign_at
      FROM clients c WHERE c.id = ANY($1::uuid[])`,
     [clientIds, campaignId],
   );
@@ -631,4 +634,18 @@ export async function campaignResults(db: SqlClient, locationId: string, id: str
   }
   out.booked = bookedClients.size;
   return out;
+}
+
+// ---------- Test sends ----------
+
+/** A test email was sent (or refused) for a campaign: kept in the audit log, nowhere else. */
+export async function logCampaignTestSend(db: SqlClient, input: { locationId: string; id: string; actor: Actor; to: string[]; ok: boolean; sender: "clinic" | "provider_test" }): Promise<void> {
+  await writeAudit(db, {
+    locationId: input.locationId,
+    actor: input.actor,
+    action: "campaign.test_sent",
+    entityType: "campaign",
+    entityId: input.id,
+    changes: { to: input.to, ok: input.ok, sender: input.sender },
+  });
 }

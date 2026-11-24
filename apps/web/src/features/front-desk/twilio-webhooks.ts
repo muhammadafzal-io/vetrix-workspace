@@ -26,6 +26,7 @@ import { getEnv, getMessagingMode } from "@/lib/env";
 import { logger } from "@/lib/logger";
 import { tenancy } from "@/lib/tenancy";
 import { dial, gather, message, readTwilioWebhook, say, sendSms, twiml } from "@/lib/twilio";
+import { mayReallySend } from "@/lib/allowlist";
 
 const MAX_TEXT = 1000;
 
@@ -70,6 +71,7 @@ async function deliver(ctx: Context, outbound: OutboundText[]) {
     return;
   }
   for (const o of outbound) {
+    if (!mayReallySend({ phone: o.to })) continue; // testing with MESSAGING_ALLOWLIST: stays recorded, not sent
     const r = await sendSms({ accountSid: env.TWILIO_ACCOUNT_SID, authToken: env.TWILIO_AUTH_TOKEN }, { from: ctx.clinicNumber, to: o.to, body: o.body }).catch(
       () => ({ ok: false, sid: null, status: 0 }),
     );

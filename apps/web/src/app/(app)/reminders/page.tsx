@@ -14,6 +14,7 @@ import { Badge } from "@/components/ui/badge";
 import { requirePage } from "@/features/clients/access";
 import { SpeciesIcon } from "@/features/clients/species-icon";
 import { RunButton, StopButton } from "@/features/reminders/controls";
+import { TestReminderBox } from "@/features/reminders/test-reminder";
 import { clinicToday, formatDate } from "@/lib/clinic-date";
 import { getMessagingMode } from "@/lib/env";
 import { cn } from "@/lib/utils";
@@ -92,6 +93,16 @@ export default async function RemindersPage({ searchParams }: { searchParams: Pr
             {dueNow.length} reminder{dueNow.length === 1 ? " is" : "s are"} due to go out. Pets of the same household due within two weeks get one message. Nothing is sent twice, and suppressed pets get nothing.
           </p>
           {shell.permissions.has("reminders.manage") && <RunButton asOf={asOf} due={dueNow.length} quiet={quiet} paused={paused} />}
+          {shell.permissions.has("reminders.manage") && (
+            <TestReminderBox
+              steps={(input.rules as Rule[]).flatMap((r) =>
+                r.touches.map((t, i) => ({
+                  value: `${r.id}:${i}`,
+                  label: `${r.name} · ${when(t.offset_days ?? Math.floor((t.offset_hours ?? 0) / 24))}`,
+                })),
+              )}
+            />
+          )}
           {sandbox && (
             <p className="text-caption text-muted-foreground">
               Sandbox: messages are saved under Messages and not sent.{" "}

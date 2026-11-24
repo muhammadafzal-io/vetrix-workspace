@@ -3,7 +3,8 @@
 // pass (network, 429, 5xx) goes back in the queue and is tried again by the
 // scheduler (setMessageResult); texts ask Twilio for delivery reports.
 import "server-only";
-import { numberForLocation, setMessageResult } from "@vetrix/db/runtime";
+import { markMessageSimulated, numberForLocation, setMessageResult } from "@vetrix/db/runtime";
+import { mayReallySend, providerTestSender } from "./allowlist";
 import { mailProvider, sendEmail } from "./email";
 import { getEnv } from "./env";
 import { logger } from "./logger";
@@ -23,9 +24,9 @@ export interface Queued {
 /** Where Twilio sends delivery reports for texts (see app/api/twilio/message-status). */
 export const MESSAGE_STATUS_PATH = "/api/twilio/message-status";
 
-export async function deliverQueued(input: { clinic: ClinicPool; organizationId: string; locationId: string; clinicName: string; messages: Queued[] }): Promise<{ sent: number; failed: number }> {
+export async function deliverQueued(input: { clinic: ClinicPool; organizationId: string; locationId: string; clinicName: string; messages: Queued[] }): Promise<{ sent: number; failed: number; held: number }> {
   const { clinic, locationId, messages } = input;
-  if (messages.length === 0) return { sent: 0, failed: 0 };
+  if (messages.length === 0) return { sent: 0, failed: 0, held: 0 };
   const env = getEnv();
   const from = await numberForLocation(tenancy().registry, { organizationId: input.organizationId, locationId });
   const contacts = new Map(
@@ -33,8 +34,15 @@ export async function deliverQueued(input: { clinic: ClinicPool; organizationId:
   );
   let sent = 0;
   let failed = 0;
+  let held = 0;
   for (const m of messages) {
     const c = contacts.get(m.clientId);
+    // Testing with MESSAGING_ALLOWLIST: anyone not on the list gets nothing (kept as simulated).
+    if (c && !mayReallySend(m.channel === "email" ? { email: c.email } : { phone: c.mobile })) {
+      await markMessageSimulated(clinic, { locationId, messageId: m.messageId });
+      held += 1;
+      continue;
+    }
     let ok = false;
     let id: string | null = null;
     let error: string | null = null;
@@ -51,7 +59,13 @@ export async function deliverQueued(input: { clinic: ClinicPool; organizationId:
         httpStatus = r.status;
         if (!r.ok) error = `Twilio refused the text (${r.status}).`;
       } else if (m.channel === "email" && mailProvider(env) && env.EMAIL_FROM && c?.email) {
-        const r = await sendEmail({ provider: mailProvider(env)!, from: env.EMAIL_FROM, fromName: input.clinicName }, { to: c.email, subject: m.subject || `A reminder from ${input.clinicName}`, text: m.body });
+        const mail = { to: c.email, subject: m.subject || `A reminder from ${input.clinicName}`, text: m.body };
+        let r = await sendEmail({ provider: mailProvider(env)!, from: env.EMAIL_FROM, fromName: input.clinicName }, mail);
+        // Dev or staging, sending domain not verified yet: the provider's test sender.
+        const fallback = providerTestSender(env);
+        if (!r.ok && r.status === 403 && mailProvider(env)!.kind === "resend" && fallback) {
+          r = await sendEmail({ provider: mailProvider(env)!, from: fallback, fromName: input.clinicName }, mail);
+        }
         ok = r.ok;
         id = r.id;
         httpStatus = r.status;
@@ -76,5 +90,5 @@ export async function deliverQueued(input: { clinic: ClinicPool; organizationId:
     if (ok) sent += 1;
     else failed += 1;
   }
-  return { sent, failed };
+  return { sent, failed, held };
 }

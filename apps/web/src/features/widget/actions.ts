@@ -38,6 +38,7 @@ import { deliverQueued } from "@/lib/outbound";
 import { createLimiter } from "@/lib/rate-limit";
 import { tenancy } from "@/lib/tenancy";
 import { sendSms } from "@/lib/twilio";
+import { mayReallySend } from "@/lib/allowlist";
 
 const SLUG = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -113,7 +114,8 @@ export async function sendCodeAction(org: string, locationId: string, mobileInpu
     if (r.status === "limit") return { ok: false, error: "That's a lot of codes. Please wait an hour, or call us." };
     if (r.status === "no_text") return { ok: false, error: "We can't text this number (texts were turned off). Please call us and we'll book you in." };
     const body = codeText(c.clinic.name, r.code);
-    if (sandbox(org)) return { ok: true, display: formatPhone(r.mobile), resendIn: 30, sandboxCode: r.code };
+    // Sandbox, or testing with MESSAGING_ALLOWLIST and this number isn't on it: show the code instead of texting it.
+    if (sandbox(org) || !mayReallySend({ phone: r.mobile })) return { ok: true, display: formatPhone(r.mobile), resendIn: 30, sandboxCode: r.code };
     const env = getEnv();
     const from = await numberForLocation(tenancy().registry, { organizationId: c.organizationId, locationId });
     if (!from || !env.TWILIO_ACCOUNT_SID || !env.TWILIO_AUTH_TOKEN) {
@@ -328,6 +330,7 @@ async function deliverTexts(org: string, organizationId: string, locationId: str
     return;
   }
   for (const o of outbound) {
+    if (!mayReallySend({ phone: o.to })) continue; // testing with MESSAGING_ALLOWLIST
     const r = await sendSms({ accountSid: env.TWILIO_ACCOUNT_SID, authToken: env.TWILIO_AUTH_TOKEN }, { from, to: o.to, body: o.body }).catch(() => ({ ok: false, status: 0 }));
     if (!r.ok) logger.error("widget chat text failed", { status: r.status });
   }

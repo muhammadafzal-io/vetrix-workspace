@@ -517,3 +517,24 @@ export function sandboxCampaignPlan(request: string, options: CampaignPlanOption
   const words = request.replace(/[^\p{L}\p{N}\s%-]/gu, " ").trim().split(/\s+/).slice(0, 6).join(" ");
   return { name: words.charAt(0).toUpperCase() + words.slice(1), channels, audience: { match: "all", conditions } };
 }
+
+// ---------- Test sends ----------
+
+/** At most this many addresses per test send. */
+export const CAMPAIGN_TEST_MAX = 5;
+
+/**
+ * The addresses staff typed for a test email: separated by commas, spaces or
+ * new lines, each a plain email address, no more than CAMPAIGN_TEST_MAX.
+ */
+export function parseTestRecipients(raw: unknown): string[] {
+  const list = [...new Set(String(raw ?? "").split(/[\s,;]+/).map((s) => s.trim().toLowerCase()).filter(Boolean))];
+  if (list.length === 0) throw new ValidationError("Enter at least one email address.", { field: "testTo" });
+  if (list.length > CAMPAIGN_TEST_MAX) throw new ValidationError(`Send a test to at most ${CAMPAIGN_TEST_MAX} addresses.`, { field: "testTo" });
+  const bad = list.find((e) => !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e) || e.length > 254);
+  if (bad) throw new ValidationError(`"${bad}" is not an email address.`, { field: "testTo" });
+  return list;
+}
+
+/** Sample values for a test send, so the email reads as a client would see it. */
+export const TEST_SAMPLE = { client_first_name: "Sam", pet_names: "Bella and Max" } as const;

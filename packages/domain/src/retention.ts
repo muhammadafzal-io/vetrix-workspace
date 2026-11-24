@@ -282,9 +282,14 @@ export function planSends(input: {
     for (const t of pending) if (t !== latest) superseded.push({ ruleId: item.ruleId, patientId: item.patientId, dueAt: item.dueAt, touchIndex: t.index });
     const client = clients.get(item.clientId);
     const planned = { ruleId: item.ruleId, patientId: item.patientId, dueAt: item.dueAt, touchIndex: latest.index };
-    const allowed = latest.channels.filter((ch) =>
+    let allowed = latest.channels.filter((ch) =>
       ch === "sms" ? client?.smsConsent : ch === "email" ? Boolean(client?.email) : !client?.flags.includes("do_not_call"),
     );
+    // A text that can't go (no consent, or STOP) goes by email instead, when the
+    // client has one: nobody misses a reminder because a step is text-only.
+    if (latest.channels.includes("sms") && !client?.smsConsent && client?.email && !allowed.includes("email")) {
+      allowed = [...allowed, "email"];
+    }
     if (allowed.length === 0) {
       skipped.push({ touch: planned, reason: latest.channels.includes("sms") ? "No consent to text and no email on file" : "Cannot be contacted this way" });
       continue;
@@ -297,7 +302,7 @@ export function planSends(input: {
   const fill = (template: string, one: One, petNames?: string[], what?: string) => {
     const pet = pets.get(one.item.patientId)!;
     const client = clients.get(one.item.clientId);
-    return fillScript(template, {
+    const text = fillScript(template, {
       clinic_name: input.values.clinicName,
       ai_name: input.values.aiName,
       clinic_phone: input.values.clinicPhone,
@@ -311,6 +316,8 @@ export function planSends(input: {
       slot_1: "this week",
       slot_2: "next week",
     });
+    // "Reply STOP" is for texts; an email has its own way to stop.
+    return one.channel === "email" ? text.replace(/\s*Reply STOP to opt out\.?/i, "").trim() : text;
   };
 
   // Household merge: same client and channel, mergeable rules, due within the window.

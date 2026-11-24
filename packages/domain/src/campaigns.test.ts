@@ -7,6 +7,7 @@ import {
   joinPetNames,
   parseCampaignDraft,
   parseCampaignPlan,
+  parseTestRecipients,
   sandboxCampaignDraft,
   sandboxCampaignPlan,
   selectAudience,
@@ -183,5 +184,14 @@ describe("AI builds a campaign from one request", () => {
     expect(sandboxCampaignPlan("Senior pets with vaccines overdue", options).audience.conditions).toEqual([{ type: "pet_age", minYears: 7 }, { type: "vaccine", state: "overdue" }]);
     expect(sandboxCampaignPlan("Win back clients not seen in 18 months", options).audience.conditions).toEqual([{ type: "last_visit", op: "more_than", months: 18 }]);
     expect(sandboxCampaignPlan("Happy holidays from the team", options).audience.conditions).toEqual([{ type: "species", values: ["cat", "dog"] }]);
+  });
+});
+
+describe("test sends", () => {
+  it("reads up to five addresses, separated any way, without repeats", () => {
+    expect(parseTestRecipients("A@x.com, b@y.org\nb@y.org; c@z.io")).toEqual(["a@x.com", "b@y.org", "c@z.io"]);
+    expect(() => parseTestRecipients("")).toThrow(ValidationError);
+    expect(() => parseTestRecipients("not-an-email")).toThrow(ValidationError);
+    expect(() => parseTestRecipients("a@x.com b@x.com c@x.com d@x.com e@x.com f@x.com")).toThrow(ValidationError);
   });
 });

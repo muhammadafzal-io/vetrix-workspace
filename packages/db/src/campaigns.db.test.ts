@@ -100,7 +100,9 @@ describe.skipIf(!url)("campaigns on the clinic database", () => {
       }
       expect((await getCampaign(db, loc, id)).status).toBe("sent");
 
-      // A second campaign the same week reaches nobody who just got one.
+      // A second campaign the same week reaches nobody who just got one. (Simulated
+      // messages never reached anyone and don't count: pretend these were delivered.)
+      await db.query(`UPDATE messages SET status = 'sent' WHERE id IN (SELECT message_id FROM campaign_recipients WHERE campaign_id = $1)`, [id]);
       const second = await readyCampaign(db, loc);
       await approveCampaign(db, { locationId: loc, id: second, actor });
       await scheduleCampaign(db, { locationId: loc, id: second, sendAt: new Date(now), now, actor });
@@ -136,6 +138,20 @@ describe.skipIf(!url)("campaigns on the clinic database", () => {
       expect(rows.rows.find((r) => r.client_id === onePet.client_id)).toMatchObject({ status: "skipped", skip_reason: "pet_not_active" });
       expect(rows.rows.every((r) => r.status !== "pending")).toBe(true);
       expect((await getCampaign(db, loc, id)).status).toBe("sent");
+    }), 300_000);
+
+  it("does not count simulated messages toward the 7-day limit", () =>
+    withRollback(async (db, loc, today) => {
+      const now = Date.now();
+      const first = await readyCampaign(db, loc, ["email"]);
+      await approveCampaign(db, { locationId: loc, id: first, actor });
+      await scheduleCampaign(db, { locationId: loc, id: first, sendAt: new Date(now), now, actor });
+      const a = await runDueCampaigns(db, { locationId: loc, now, today, sandbox: true, quietHours: false, values });
+      const second = await readyCampaign(db, loc, ["email"]);
+      await approveCampaign(db, { locationId: loc, id: second, actor });
+      await scheduleCampaign(db, { locationId: loc, id: second, sendAt: new Date(now), now, actor });
+      const b = await runDueCampaigns(db, { locationId: loc, now, today, sandbox: true, quietHours: false, values });
+      expect(b.sent).toBe(a.sent);
     }), 300_000);
 
   it("Send now sends only its own campaign; the scheduler sends every due one", () =>
