@@ -7,6 +7,7 @@ import {
   ClipboardList,
   Hourglass,
   LayoutDashboard,
+  Megaphone,
   MessageSquareText,
   PawPrint,
   PhoneCall,
@@ -57,6 +58,7 @@ export const NAV: NavGroup[] = [
       { href: "/calls", label: "Calls", icon: PhoneCall, permission: "calls.view", keywords: ["phone", "triage", "recordings"] },
       { href: "/messages", label: "Messages", icon: MessageSquareText, permission: "messages.view", keywords: ["texts", "sms", "email"] },
       { href: "/reminders", label: "Reminders", icon: BellRing, permission: "reminders.manage", keywords: ["due", "recalls", "vaccines"] },
+      { href: "/campaigns", label: "Campaigns", icon: Megaphone, permission: "campaigns.manage", keywords: ["marketing", "promotion", "offer", "newsletter"] },
     ],
   },
   {

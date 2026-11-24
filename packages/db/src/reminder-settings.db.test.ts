@@ -75,7 +75,13 @@ describe.skipIf(!url)("overdue vaccine reminders on the clinic database", () => 
       expect(sent.rows).toEqual([expect.objectContaining({ template_key: "vaccine_overdue_3" })]);
       expect(sent.rows[0]!.body).toContain("is now overdue");
 
-      // Day 7: the +7 text and email; the +3 is not sent again.
+      // Day 7 in quiet hours: the +7 text must wait, so its email waits too
+      // (else the touch counts as sent and the text is never sent).
+      await runReminders(db, { locationId: loc, asOf: "2027-03-14", sandbox: true, quietHours: true, values, actor });
+      const quiet = await db.query(`SELECT 1 FROM messages WHERE patient_id = $1 AND template_key = 'vaccine_overdue_7' AND created_at >= now()`, [pet.id]);
+      expect(quiet.rows).toHaveLength(0);
+
+      // Day 7 after quiet hours: the +7 text and email together; the +3 is not sent again.
       await runReminders(db, { locationId: loc, asOf: "2027-03-14", sandbox: true, quietHours: false, values, actor });
       const later = await db.query<{ template_key: string; channel: string }>(`SELECT template_key, channel FROM messages WHERE patient_id = $1 AND template_key LIKE 'vaccine_%' AND created_at >= now() ORDER BY template_key, channel`, [pet.id]);
       expect(later.rows.map((r) => `${r.template_key}:${r.channel}`)).toEqual(["vaccine_overdue_3:sms", "vaccine_overdue_7:email", "vaccine_overdue_7:sms"]);

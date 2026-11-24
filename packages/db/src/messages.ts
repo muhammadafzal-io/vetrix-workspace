@@ -179,9 +179,9 @@ export async function messagingSettings(db: SqlClient, locationId: string): Prom
 }
 
 /** Live messages saved but not yet sent (oldest first), for the scheduler to send. */
-export async function queuedMessages(db: SqlClient, locationId: string, limit = 100, options: { quietHours?: boolean } = {}): Promise<{ messageId: string; clientId: string; channel: "sms" | "email" | "ai_call"; body: string }[]> {
-  const { rows } = await db.query<{ messageId: string; clientId: string; channel: "sms" | "email" | "ai_call"; body: string }>(
-    `SELECT id AS "messageId", client_id AS "clientId", channel, body FROM messages
+export async function queuedMessages(db: SqlClient, locationId: string, limit = 100, options: { quietHours?: boolean } = {}): Promise<{ messageId: string; clientId: string; channel: "sms" | "email" | "ai_call"; body: string; subject: string | null }[]> {
+  const { rows } = await db.query<{ messageId: string; clientId: string; channel: "sms" | "email" | "ai_call"; body: string; subject: string | null }>(
+    `SELECT id AS "messageId", client_id AS "clientId", channel, body, subject FROM messages
      WHERE location_id = $1 AND status = 'queued' AND (next_attempt_at IS NULL OR next_attempt_at <= now())
        -- In quiet hours a retried text or call waits; emails and first tries go out as before.
        AND NOT ($3 AND attempts > 0 AND channel <> 'email')

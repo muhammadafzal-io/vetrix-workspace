@@ -7,6 +7,20 @@
 import "server-only";
 import {
   acceptRewrite,
+  buildCampaignPlanPrompt,
+  buildCampaignPrompt,
+  CAMPAIGN_DRAFT_SCHEMA,
+  CAMPAIGN_PLAN_SCHEMA,
+  parseCampaignPlan,
+  sandboxCampaignPlan,
+  type CampaignPlan,
+  type CampaignPlanOptions,
+  checkCampaignCopy,
+  parseCampaignDraft,
+  sandboxCampaignDraft,
+  type CampaignDraft,
+  type CampaignDraftRequest,
+  type CopyIssue,
   buildRewritePrompt,
   buildTriagePrompt,
   buildUnderstandPrompt,
@@ -43,6 +57,8 @@ export const PROMPT_CACHE_KEY = {
   triage: "vetrix-triage",
   understand: "vetrix-understand",
   rewrite: "vetrix-rewrite",
+  campaign: "vetrix-campaign",
+  plan: "vetrix-campaign-plan",
 } as const;
 
 interface Usage {
@@ -127,15 +143,16 @@ async function askJson(
   prompt: { system: string; user: string },
   schema: { name: string; schema: object },
   log: Logger,
-  what: "understand" | "rewrite",
+  what: "understand" | "rewrite" | "campaign" | "plan",
   fetchImpl: typeof fetch,
+  timeoutMs = TIMEOUT_MS,
 ): Promise<Record<string, unknown> | null> {
   try {
-    trace("ai", `lib/ai.ts › ${what}`, `→ POST api.openai.com (model ${config.model}, ${TIMEOUT_MS / 1000} s limit)`);
+    trace("ai", `lib/ai.ts › ${what}`, `→ POST api.openai.com (model ${config.model}, ${timeoutMs / 1000} s limit)`);
     const res = await fetchImpl("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: { authorization: `Bearer ${config.apiKey}`, "content-type": "application/json" },
-      signal: AbortSignal.timeout(TIMEOUT_MS),
+      signal: AbortSignal.timeout(timeoutMs),
       body: JSON.stringify({
         model: config.model,
         messages: [
@@ -185,4 +202,77 @@ export function conversationAI(): ConversationAI | undefined {
     cachedConversation = aiMode(env) === "openai" ? createOpenAiConversation({ apiKey: env.OPENAI_API_KEY!, model: env.OPENAI_TEXT_MODEL! }, logger) : null;
   }
   return cachedConversation ?? undefined;
+}
+
+// ---------- Campaign drafts ----------
+
+/** Staff wait for a campaign draft on screen, so it may take longer than a call turn. */
+const CAMPAIGN_TIMEOUT_MS = 20_000;
+
+export interface CampaignDraftResult {
+  draft: CampaignDraft;
+  /** "ai": written by the model; "sandbox": the scripted draft (no key, or the model failed). */
+  source: "ai" | "sandbox";
+  /** Problems the copy check still finds (staff fix them before approving). */
+  issues: { sms: CopyIssue[]; email: CopyIssue[] };
+}
+
+function issuesOf(draft: CampaignDraft, facts: string, forbidden: readonly string[]) {
+  return {
+    sms: draft.sms !== undefined ? checkCampaignCopy({ channel: "sms", body: draft.sms }, facts, forbidden) : [],
+    email: draft.emailBody !== undefined ? checkCampaignCopy({ channel: "email", subject: draft.emailSubject, body: draft.emailBody }, facts, forbidden) : [],
+  };
+}
+
+/**
+ * Writes a campaign's text and email. With an OpenAI key the model drafts
+ * it; if the copy check finds invented facts or promises, the model gets one
+ * more try with the problems listed. Without a key (or if the model fails),
+ * the scripted sandbox draft is used. Staff always review and approve.
+ */
+export async function draftCampaign(req: CampaignDraftRequest, facts: string, forbidden: readonly string[], fetchImpl: typeof fetch = fetch): Promise<CampaignDraftResult> {
+  const env = getEnv();
+  const sandbox = (): CampaignDraftResult => {
+    const draft = sandboxCampaignDraft(req);
+    return { draft, source: "sandbox", issues: issuesOf(draft, facts, forbidden) };
+  };
+  if (aiMode(env) !== "openai") return sandbox();
+  const config = { apiKey: env.OPENAI_API_KEY!, model: env.OPENAI_TEXT_MODEL! };
+  let fix: CopyIssue[] | undefined;
+  let last: CampaignDraftResult | null = null;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const answer = await askJson(config, buildCampaignPrompt({ ...req, fix }), { name: "campaign", schema: CAMPAIGN_DRAFT_SCHEMA }, logger, "campaign", fetchImpl, CAMPAIGN_TIMEOUT_MS);
+    const draft = parseCampaignDraft(answer ? JSON.stringify(answer) : null, req.channels);
+    if (!draft) break;
+    const issues = issuesOf(draft, facts, forbidden);
+    last = { draft, source: "ai", issues };
+    if (issues.sms.length === 0 && issues.email.length === 0) return last;
+    fix = [...issues.sms, ...issues.email];
+    logger.info("campaign draft failed the copy check; asking again", { issues: fix.length });
+  }
+  return last ?? sandbox();
+}
+
+/**
+ * Turns one staff request into a campaign plan: name, channels and audience
+ * rules (checked by validateAudience). With no AI key, or an answer that does
+ * not pass the checks, the keyword-based sandbox plan is used.
+ */
+export async function planCampaign(request: string, options: CampaignPlanOptions, fetchImpl: typeof fetch = fetch): Promise<{ plan: CampaignPlan; source: "ai" | "sandbox" }> {
+  const env = getEnv();
+  if (aiMode(env) === "openai") {
+    const answer = await askJson(
+      { apiKey: env.OPENAI_API_KEY!, model: env.OPENAI_TEXT_MODEL! },
+      buildCampaignPlanPrompt(request, options),
+      { name: "campaign_plan", schema: CAMPAIGN_PLAN_SCHEMA },
+      logger,
+      "plan",
+      fetchImpl,
+      CAMPAIGN_TIMEOUT_MS,
+    );
+    const plan = parseCampaignPlan(answer, options);
+    if (plan) return { plan, source: "ai" };
+    if (answer) logger.info("campaign plan from the model did not pass the checks; using the sandbox plan");
+  }
+  return { plan: sandboxCampaignPlan(request, options), source: "sandbox" };
 }

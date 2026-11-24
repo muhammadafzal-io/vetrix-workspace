@@ -18,6 +18,7 @@ export const PERMISSIONS = {
   "tasks.manage": "Assign and complete staff tasks",
   "tasks.controlled_substances": "Approve controlled-substance refill requests",
   "reminders.manage": "Run and pause reminders and recalls",
+  "campaigns.manage": "Create, approve and send marketing campaigns",
   "reports.view": "See reports",
   "settings.manage": "Change clinic hours, services, rooms and AI settings",
   "staff.manage": "Invite staff and change their roles",

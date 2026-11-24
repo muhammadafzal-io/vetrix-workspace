@@ -16,6 +16,8 @@ export interface Queued {
   clientId: string;
   channel: "sms" | "email" | "ai_call";
   body: string;
+  /** Emails: the message's own subject (campaigns); otherwise a reminder subject. */
+  subject?: string | null;
 }
 
 /** Where Twilio sends delivery reports for texts (see app/api/twilio/message-status). */
@@ -49,7 +51,7 @@ export async function deliverQueued(input: { clinic: ClinicPool; organizationId:
         httpStatus = r.status;
         if (!r.ok) error = `Twilio refused the text (${r.status}).`;
       } else if (m.channel === "email" && mailProvider(env) && env.EMAIL_FROM && c?.email) {
-        const r = await sendEmail({ provider: mailProvider(env)!, from: env.EMAIL_FROM, fromName: input.clinicName }, { to: c.email, subject: `A reminder from ${input.clinicName}`, text: m.body });
+        const r = await sendEmail({ provider: mailProvider(env)!, from: env.EMAIL_FROM, fromName: input.clinicName }, { to: c.email, subject: m.subject || `A reminder from ${input.clinicName}`, text: m.body });
         ok = r.ok;
         id = r.id;
         httpStatus = r.status;

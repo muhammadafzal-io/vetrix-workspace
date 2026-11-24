@@ -40,13 +40,22 @@ export async function POST(request: Request) {
     if (tenant.status !== "active") continue;
     try {
       const { pool } = await t.clinicPool(tenant.organization_id);
-      const { rows: locations } = await pool.query<{ id: string; name: string; main_phone: string | null }>(
-        `SELECT id, name, main_phone FROM locations WHERE status <> 'closed' ORDER BY name`,
+      const { rows: locations } = await pool.query<{ id: string; name: string; main_phone: string | null; widget_enabled: boolean }>(
+        `SELECT id, name, main_phone, widget_enabled FROM locations WHERE status <> 'closed' ORDER BY name`,
       );
       for (const loc of locations) {
         try {
           const aiName = await aiPersonaName(pool, loc.id);
-          const values = { clinicName: loc.name, aiName, clinicPhone: phone(loc.main_phone), bookingLink: "reply to this text", bookingLinkBase: bookingLinkBase(tenant.organization_slug) };
+          const appUrl = getEnv().APP_URL.replace(/\/$/, "");
+          const values = {
+            clinicName: loc.name,
+            aiName,
+            clinicPhone: phone(loc.main_phone),
+            bookingLink: "reply to this text",
+            bookingLinkBase: bookingLinkBase(tenant.organization_slug),
+            // Campaigns link to the clinic's booking page when it is switched on.
+            campaigns: { bookingUrl: loc.widget_enabled ? `${appUrl}/w/${tenant.organization_slug}` : null, unsubscribeBase: `${appUrl}/u/${tenant.organization_slug}` },
+          };
           const r = await withTransaction(pool, (tx) => runDueJobs(tx, { locationId: loc.id, now, sandbox, values }));
           // Live: send everything queued at this location that is ready (this
           // run's messages, waitlist offers, replies, retries whose wait is over).

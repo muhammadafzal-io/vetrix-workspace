@@ -10,6 +10,7 @@ import { pruneWidget } from "./widget";
 import { fillScript, isQuietHours, localParts } from "@vetrix/domain";
 import { getVeterinaryPack } from "@vetrix/pack";
 import type { Actor } from "./clients";
+import { runDueCampaigns, type CampaignSendValues } from "./campaigns";
 import { runReminders, type RunSummary } from "./retention";
 import type { SqlClient } from "./sql-client";
 import { waitlistFollowUps } from "./waitlist";
@@ -23,6 +24,8 @@ export interface JobValues {
   clinicPhone: string;
   bookingLink: string;
   bookingLinkBase?: string;
+  /** Campaign links: the clinic's booking page (or null) and the email unsubscribe base. */
+  campaigns?: Pick<CampaignSendValues, "bookingUrl" | "unsubscribeBase">;
 }
 
 export interface JobResult {
@@ -31,6 +34,7 @@ export interface JobResult {
   fastingChecks?: number;
   fastingTasks?: number;
   waitlist?: { expired: number; calls: number };
+  campaigns?: { campaigns: number; sent: number; skipped: number; finished: number };
   /** Live mode: messages saved as queued, to be sent by the caller. */
   outbound: { messageId: string; clientId: string; channel: "sms" | "email" | "ai_call"; body: string }[];
 }
@@ -132,7 +136,23 @@ export async function runDueJobs(db: SqlClient, input: { locationId: string; now
     result.waitlist = wl;
   }
 
-  // 5. Once a day: remove used booking-widget codes and old widget sessions.
+  // 5. Every tick: campaigns whose time has come, a batch at a time (texts wait out quiet hours).
+  if (input.values.campaigns) {
+    const c = await runDueCampaigns(db, {
+      locationId: input.locationId,
+      now: input.now,
+      today: here.date,
+      sandbox: input.sandbox,
+      quietHours: isQuietHours(here.minutes, quietStart, quietEnd),
+      values: { clinicName: input.values.clinicName, clinicPhone: input.values.clinicPhone, ...input.values.campaigns },
+    });
+    if (c.campaigns) {
+      result.ran.push("campaigns");
+      result.campaigns = c;
+    }
+  }
+
+  // 6. Once a day: remove used booking-widget codes and old widget sessions.
   if (await claim(db, input.locationId, "widget_cleanup", here.date)) {
     await pruneWidget(db, input.now);
     result.ran.push("widget_cleanup");

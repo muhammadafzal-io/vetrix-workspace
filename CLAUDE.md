@@ -19,7 +19,7 @@ Read `docs/HANDOFF.md` for the full planning history.
 - Sign-in: Better Auth, users and sessions in the registry. Public sign-up is off; staff are added (`pnpm db:staff:add` until onboarding) and set a password via "Forgot password". Roles are per location; permissions come from `packages/domain/src/access.ts`. Web code imports `@vetrix/db/runtime`, never `@vetrix/db`; only the platform Clinics page also imports `@vetrix/db/clinic-setup` (it runs migrations).
 - Business rules live in `packages/domain`, never in React components or route handlers.
 - New clinics are added by a platform admin in the admin dashboard (`/admin/clinics`) (decided 23 Nov 2026; self-serve sign-up later): one Neon project per clinic through the Neon API (`NEON_API_KEY`), connection string stored encrypted in the registry (`enc:v1:`, AES-256-GCM, `DATABASE_SECRETS_KEY`: back it up), clinic migrations, first location (status onboarding) with pack defaults, owner invited by a set-password email. Steps are retryable (`packages/db/src/clinic-setup.ts`). Platform admins are granted only by `pnpm db:admin:grant`. `pnpm db:tenant:add` still covers manual creation. The 10-step onboarding wizard is Phase B.
-- The schema is created manually from `db/migrations`. Registry: 13 tables (001_registry + 003_auth + 005_phone_numbers + 010_platform_admin, which adds columns only). Clinic: 64 tables (002_clinic + 004_front_desk + 006_messages + 007_jobs_and_replies + 008_booking_links + 009_widget + 011_patient_history + 012_reminder_delivery, which adds columns only). Never run both files in one database. Add changes as new numbered files.
+- The schema is created manually from `db/migrations`. Registry: 13 tables (001_registry + 003_auth + 005_phone_numbers + 010_platform_admin, which adds columns only). Clinic: 67 tables (002_clinic + 004_front_desk + 006_messages + 007_jobs_and_replies + 008_booking_links + 009_widget + 011_patient_history + 012_reminder_delivery, which adds columns only, + 013_campaigns). Never run both files in one database. Add changes as new numbered files.
 
 ## Pack v0.2 rules that are easy to miss
 - Triage classifies by meaning, treats pack phrases as examples, escalates when unsure, and never lowers a level within a call.
@@ -27,6 +27,7 @@ Read `docs/HANDOFF.md` for the full planning history.
 - Booking euthanasia pauses that pet's reminders.
 - A pet is marked deceased only after the death, pet name, and species are confirmed.
 - No Aesthetix terms in Vetrix screens, emails, or texts.
+- Campaigns (`packages/domain/src/campaigns.ts`): SMS and email only; marketing consent always required (plus text consent or an email); at most one campaign message per client per 7 days; audience rules one level (match all / any); `campaigns.manage` (Owner, Practice manager) creates, approves and sends; any price, date, phone or link in the copy must come from the goal or clinic details.
 - A clinic may replace a reminder's schedule in Settings → Reminders (`reminder_rules.overrides.touches`, rules in `packages/domain/src/reminder-schedule.ts`): up to 4 touches (pack default stays 3; approved 24 Nov 2026). Overdue vaccine reminders stop 60 days after the due date. AI reminder calls fail live until `apps/voice` exists, so overdue touches use text + email for now.
 
 ## Build plan
@@ -41,6 +42,7 @@ Muhammad prefers concise, practical answers and iterative changes. Explain an un
 - STOP blocks all texts. Opted-out clients get confirmations by email or AI call instead. Needs legal review before launch.
 - After-hours default: the pack default (emergency clinic referral, then book the next slot).
 - Med spa shows as "Coming soon" in the vertical selector.
+- Campaigns (built 24 Nov 2026): marketing texts need an A2P 10DLC marketing campaign registered with Twilio before going live, and the TCPA review is part of the open legal review. Emails carry an unsubscribe link (`/u/<org>/<token>`).
 - Not chosen yet: final name and pricing.
 # My Working Style — Deep Project Understanding
 

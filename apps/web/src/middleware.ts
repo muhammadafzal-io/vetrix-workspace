@@ -8,7 +8,7 @@ import { trace } from "@vetrix/domain";
 import { widgetFrameOrigins } from "@/lib/widget-frame";
 
 // Public pages: sign-in, waitlist claim links and booking links from texts, and the booking widget.
-const PUBLIC_PATHS = ["/sign-in", "/forgot-password", "/reset-password", "/claim", "/b", "/w"];
+const PUBLIC_PATHS = ["/sign-in", "/forgot-password", "/reset-password", "/claim", "/b", "/w", "/u"];
 const SLUG = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 
 const HERE = "middleware.ts › middleware";

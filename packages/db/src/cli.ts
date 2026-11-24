@@ -22,7 +22,7 @@ import { isRoleKey, ROLE_KEYS } from "@vetrix/domain";
 import { assignPhoneNumber } from "./phone-numbers";
 import { listTenantDatabases, recordTenantMigrations, registerTenant, setTenantStatus, type TenantDatabase } from "./tenants";
 
-const EXPECTED_TABLES: Record<MigrationTarget, number> = { registry: 13, clinic: 64 };
+const EXPECTED_TABLES: Record<MigrationTarget, number> = { registry: 13, clinic: 67 };
 
 function registryUrl(): string {
   const url = process.env.REGISTRY_DATABASE_URL;

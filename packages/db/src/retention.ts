@@ -203,8 +203,13 @@ export async function runReminders(
 
   // Everything is written in a few batched statements (one round trip each).
   type T = { ruleId: string; patientId: string; dueAt: string; touchIndex: number };
+  // In quiet hours texts and calls wait. A touch is recorded as sent once any
+  // of its messages goes, so when one channel of a touch waits, the whole
+  // touch waits (its email too); otherwise the held text would never go out.
+  const touchKey = (t: T) => `${t.ruleId}|${t.patientId}|${t.dueAt}|${t.touchIndex}`;
+  const heldTouches = new Set(input.quietHours ? plan.plans.filter((m) => m.channel !== "email").flatMap((m) => m.touches.map(touchKey)) : []);
   const toSend = plan.plans.filter((m) => {
-    if (input.quietHours && m.channel !== "email") {
+    if (m.touches.some((t) => heldTouches.has(touchKey(t)))) {
       summary.heldForQuietHours += 1;
       return false;
     }

@@ -17,7 +17,7 @@ export function RunButton({ asOf, due, quiet, paused = false }: { asOf: string; 
           {pending ? <Loader2 className="animate-spin" aria-hidden /> : <Send aria-hidden />}
           {pending ? "Sending…" : `Send ${due} due reminder${due === 1 ? "" : "s"}`}
         </Button>
-        {quiet && <span className="text-caption text-muted-foreground">Quiet hours: emails go now, texts and calls wait for the next run.</span>}
+        {quiet && <span className="text-caption text-muted-foreground">Quiet hours: texts and calls wait for the next run. Emails go now, unless the same reminder also has a text (then both wait).</span>}
       </div>
       {result && !result.ok && <Alert variant="error">{result.error}</Alert>}
       {result?.ok && (

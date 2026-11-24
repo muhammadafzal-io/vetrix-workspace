@@ -25,3 +25,4 @@ export * from "./conversation-ai";
 export * from "./trace";
 export * from "./clinic-setup";
 export * from "./patient-history";
+export * from "./campaigns";

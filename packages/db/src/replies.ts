@@ -30,12 +30,18 @@ export interface ReplyValues {
 const retention = () =>
   getVeterinaryPack().retention as unknown as { inbound_reply_handling: ReplyRules; templates: Record<string, string> };
 
+/**
+ * The text a reply answers: the latest text to this client in 14 days. Only
+ * texts count (a reply by text never answers an email or a campaign). When
+ * two texts went out at the same moment (e.g. a fasting check and a reminder
+ * in one run), the one about a visit wins, since it expects an answer.
+ */
 async function lastOutbound(db: SqlClient, locationId: string, clientId: string): Promise<LastOutbound | null> {
   const { rows } = await db.query<LastOutbound>(
     `SELECT m.id, m.template_key, m.patient_id, m.appointment_id, p.name AS pet_name
      FROM messages m LEFT JOIN patients p ON p.id = m.patient_id
-     WHERE m.location_id = $1 AND m.client_id = $2 AND m.created_at > now() - interval '14 days'
-     ORDER BY m.created_at DESC LIMIT 1`,
+     WHERE m.location_id = $1 AND m.client_id = $2 AND m.channel = 'sms' AND m.created_at > now() - interval '14 days'
+     ORDER BY m.created_at DESC, (m.appointment_id IS NOT NULL) DESC LIMIT 1`,
     [locationId, clientId],
   );
   return rows[0] ?? null;
