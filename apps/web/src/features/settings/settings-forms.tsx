@@ -29,6 +29,8 @@ import { Textarea } from "@/components/ui/textarea";
 import { fieldError, formDefaults, FormError, SubmitButton } from "@/features/clients/form-bits";
 import type { ActionResult } from "@/lib/action-result";
 import { cn } from "@/lib/utils";
+import type { ReminderScheduleView } from "@vetrix/db/runtime";
+import { ReminderScheduleEditor } from "./reminder-schedule";
 import {
   addHolidayAction,
   removeHolidayAction,
@@ -38,6 +40,7 @@ import {
   saveMessagingAction,
   savePoliciesAction,
   setReminderRuleAction,
+  setRemindersPausedAction,
   saveWidgetAction,
   setServiceActiveAction,
   setServiceOnlineAction,
@@ -556,9 +559,25 @@ export function MessagingForm({ saved, timezone }: { saved: { quietStart: string
 
 // ---------- Reminders and services ----------
 
-export function RemindersCard({ rules }: { rules: { id: string; name: string; enabled: boolean; running: boolean }[] }) {
+export function RemindersCard({
+  rules,
+  paused,
+  schedules,
+  clinicName,
+  aiName,
+}: {
+  rules: { id: string; name: string; enabled: boolean; running: boolean }[];
+  paused: boolean;
+  schedules: ReminderScheduleView[];
+  clinicName: string;
+  aiName: string;
+}) {
   return (
-    <Card id="reminders" title="Reminders" description="Which reminders go out. Turning one off stops new texts for it; reminders already sent stay in the log.">
+    <Card id="reminders" title="Reminders" description="Which reminders go out and when. Turning one off stops new texts for it; reminders already sent stay in the log.">
+      <PauseRow paused={paused} />
+      {schedules.map((s) => (
+        <ReminderScheduleEditor key={s.ruleId} schedule={s} clinicName={clinicName} aiName={aiName} />
+      ))}
       <ul className="grid gap-2 sm:grid-cols-2">
         {rules.map((r) => (
           <ToggleRow key={r.id} kind="reminder" id={r.id} label={r.name} detail={r.running ? undefined : "Coming in a later update"} on={r.enabled} disabled={!r.running} />
@@ -741,6 +760,41 @@ export function WidgetForm({ saved, hostedUrl, scriptUrl, slug }: { saved: { ena
         </>
       )}
     </FormCard>
+  );
+}
+
+/** Pauses every reminder at this location (e.g. while the clinic moves or its records are being fixed). */
+function PauseRow({ paused }: { paused: boolean }) {
+  const [on, setOn] = useState(!paused);
+  const [pending, start] = useTransition();
+  const [error, setError] = useState<string | null>(null);
+  return (
+    <label className={cn("flex cursor-pointer items-center gap-3 rounded-lg border px-4 py-3", !on && "border-warning/40 bg-warning-soft")}>
+      <span className="grid min-w-0 flex-1 gap-0.5">
+        <span className="text-small font-semibold">{on ? "Reminders are on" : "Reminders are paused"}</span>
+        <span className="text-caption text-muted-foreground">
+          {on ? "Turn off to pause every reminder at this clinic. Nothing is lost; they continue when you turn them back on." : "No reminder goes out until you turn this back on. Visit confirmations and replies still go out."}
+        </span>
+        {error && <span className="text-caption text-destructive">{error}</span>}
+      </span>
+      {pending && <Loader2 className="size-4 animate-spin text-muted-foreground" aria-hidden />}
+      <Switch
+        aria-label="Reminders on"
+        checked={on}
+        disabled={pending}
+        onChange={(e) => {
+          const next = e.currentTarget.checked;
+          setOn(next);
+          start(async () => {
+            const r = await setRemindersPausedAction(!next);
+            if (!r.ok) {
+              setOn(!next);
+              setError(r.error);
+            } else setError(null);
+          });
+        }}
+      />
+    </label>
   );
 }
 

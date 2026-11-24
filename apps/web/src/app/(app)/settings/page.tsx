@@ -63,7 +63,7 @@ export default async function SettingsPage() {
           />
           <PoliciesForm saved={s.policies} />
           <MessagingForm saved={s.messaging} timezone={s.details.timezone} />
-          <RemindersCard rules={s.reminderRules} />
+          <RemindersCard rules={s.reminderRules} paused={s.remindersPaused} schedules={s.reminderSchedules} clinicName={s.details.name} aiName={s.frontDesk.aiName} />
           <ServicesCard groups={groups} />
           <WidgetForm saved={s.widget} slug={slug} hostedUrl={`${appUrl}/w/${slug}`} scriptUrl={`${appUrl}/widget.js`} />
         </div>

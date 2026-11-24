@@ -1,7 +1,7 @@
 // Texts and emails with clients: the message log, one client's history, and
 // recording a message staff send. Sending itself (Twilio, SendGrid) happens in
 // the web app after the record is saved.
-import { NotFoundError, type ClientFlag, type MessageChannel } from "@vetrix/domain";
+import { isRetryableSendFailure, nextSendAttempt, NotFoundError, type ClientFlag, type MessageChannel } from "@vetrix/domain";
 import { writeAudit, type Actor } from "./clients";
 import type { SqlClient } from "./sql-client";
 
@@ -125,15 +125,45 @@ export async function recordOutbound(
 }
 
 /** The result of a live send. */
+/**
+ * Records what happened when a message was sent. With `retry`, a failure the
+ * provider may not repeat (network error, 429, 5xx) puts the message back in
+ * the queue for a later try (5 min, 30 min, 2 h); after the fourth try, or for
+ * any other failure, it is failed. Every try is counted in `attempts`.
+ */
 export async function setMessageResult(
   db: SqlClient,
-  input: { locationId: string; messageId: string; ok: boolean; providerMessageId: string | null; error?: string | null },
-): Promise<void> {
+  input: { locationId: string; messageId: string; ok: boolean; providerMessageId: string | null; error?: string | null; retry?: { httpStatus: number | null; now?: number } },
+): Promise<{ status: "sent" | "queued" | "failed"; attempts: number }> {
+  const { rows } = await db.query<{ attempts: number }>(`SELECT attempts FROM messages WHERE id = $1 AND location_id = $2`, [input.messageId, input.locationId]);
+  const attempts = (rows[0]?.attempts ?? 0) + 1;
+  const again = !input.ok && input.retry ? nextSendAttempt(attempts, isRetryableSendFailure(input.retry.httpStatus), input.retry.now ?? Date.now()) : null;
+  const status = input.ok ? "sent" : again ? "queued" : "failed";
   await db.query(
-    `UPDATE messages SET status = $3, provider_message_id = $4, error = $5, sent_at = CASE WHEN $3 = 'sent' THEN now() ELSE sent_at END
+    `UPDATE messages SET status = $3, provider_message_id = coalesce($4, provider_message_id), error = $5, attempts = $6, next_attempt_at = $7,
+            sent_at = CASE WHEN $3 = 'sent' THEN now() ELSE sent_at END
      WHERE id = $1 AND location_id = $2`,
-    [input.messageId, input.locationId, input.ok ? "sent" : "failed", input.providerMessageId, input.ok ? null : (input.error ?? "Not sent")],
+    [input.messageId, input.locationId, status, input.providerMessageId, input.ok ? null : (input.error ?? "Not sent"), attempts, again],
   );
+  return { status, attempts };
+}
+
+/**
+ * A carrier delivery report (Twilio status callback). Only moves a text
+ * forward: delivered, or failed when the carrier could not deliver it.
+ * Returns false when no message has that provider id.
+ */
+export async function setDeliveryStatus(
+  db: SqlClient,
+  input: { providerMessageId: string; status: "delivered" | "failed"; error?: string | null },
+): Promise<boolean> {
+  const { rows } = await db.query(
+    input.status === "delivered"
+      ? `UPDATE messages SET status = 'delivered', delivered_at = now() WHERE provider_message_id = $1 AND status IN ('sent', 'queued') RETURNING 1`
+      : `UPDATE messages SET status = 'failed', error = $2 WHERE provider_message_id = $1 AND status IN ('sent', 'queued') RETURNING 1`,
+    input.status === "delivered" ? [input.providerMessageId] : [input.providerMessageId, input.error ?? "The carrier could not deliver it."],
+  );
+  return rows.length > 0;
 }
 
 /** Quiet hours and time zone for a location. */
@@ -149,10 +179,14 @@ export async function messagingSettings(db: SqlClient, locationId: string): Prom
 }
 
 /** Live messages saved but not yet sent (oldest first), for the scheduler to send. */
-export async function queuedMessages(db: SqlClient, locationId: string, limit = 100): Promise<{ messageId: string; clientId: string; channel: "sms" | "email" | "ai_call"; body: string }[]> {
+export async function queuedMessages(db: SqlClient, locationId: string, limit = 100, options: { quietHours?: boolean } = {}): Promise<{ messageId: string; clientId: string; channel: "sms" | "email" | "ai_call"; body: string }[]> {
   const { rows } = await db.query<{ messageId: string; clientId: string; channel: "sms" | "email" | "ai_call"; body: string }>(
-    `SELECT id AS "messageId", client_id AS "clientId", channel, body FROM messages WHERE location_id = $1 AND status = 'queued' ORDER BY created_at LIMIT $2`,
-    [locationId, limit],
+    `SELECT id AS "messageId", client_id AS "clientId", channel, body FROM messages
+     WHERE location_id = $1 AND status = 'queued' AND (next_attempt_at IS NULL OR next_attempt_at <= now())
+       -- In quiet hours a retried text or call waits; emails and first tries go out as before.
+       AND NOT ($3 AND attempts > 0 AND channel <> 'email')
+     ORDER BY created_at LIMIT $2`,
+    [locationId, limit, options.quietHours ?? false],
   );
   return rows;
 }

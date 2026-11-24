@@ -1,5 +1,7 @@
 // Sends messages that were saved as "queued" (live mode only) and records
-// each result. Used by reminder runs and scheduled jobs.
+// each result. Used by reminder runs and scheduled jobs. A failure that may
+// pass (network, 429, 5xx) goes back in the queue and is tried again by the
+// scheduler (setMessageResult); texts ask Twilio for delivery reports.
 import "server-only";
 import { numberForLocation, setMessageResult } from "@vetrix/db/runtime";
 import { mailProvider, sendEmail } from "./email";
@@ -16,6 +18,9 @@ export interface Queued {
   body: string;
 }
 
+/** Where Twilio sends delivery reports for texts (see app/api/twilio/message-status). */
+export const MESSAGE_STATUS_PATH = "/api/twilio/message-status";
+
 export async function deliverQueued(input: { clinic: ClinicPool; organizationId: string; locationId: string; clinicName: string; messages: Queued[] }): Promise<{ sent: number; failed: number }> {
   const { clinic, locationId, messages } = input;
   if (messages.length === 0) return { sent: 0, failed: 0 };
@@ -31,16 +36,23 @@ export async function deliverQueued(input: { clinic: ClinicPool; organizationId:
     let ok = false;
     let id: string | null = null;
     let error: string | null = null;
+    // null: no answer from the provider (worth retrying); undefined: not sendable at all.
+    let httpStatus: number | null | undefined;
     try {
       if (m.channel === "sms" && from && env.TWILIO_ACCOUNT_SID && env.TWILIO_AUTH_TOKEN && c) {
-        const r = await sendSms({ accountSid: env.TWILIO_ACCOUNT_SID, authToken: env.TWILIO_AUTH_TOKEN }, { from, to: c.mobile, body: m.body });
+        const r = await sendSms(
+          { accountSid: env.TWILIO_ACCOUNT_SID, authToken: env.TWILIO_AUTH_TOKEN },
+          { from, to: c.mobile, body: m.body, statusCallback: new URL(MESSAGE_STATUS_PATH, env.APP_URL).toString() },
+        );
         ok = r.ok;
         id = r.sid;
+        httpStatus = r.status;
         if (!r.ok) error = `Twilio refused the text (${r.status}).`;
       } else if (m.channel === "email" && mailProvider(env) && env.EMAIL_FROM && c?.email) {
         const r = await sendEmail({ provider: mailProvider(env)!, from: env.EMAIL_FROM, fromName: input.clinicName }, { to: c.email, subject: `A reminder from ${input.clinicName}`, text: m.body });
         ok = r.ok;
         id = r.id;
+        httpStatus = r.status;
         if (!r.ok) error = `The email provider refused the email (${r.status}).`;
       } else {
         error = m.channel === "ai_call" ? "Reminder calls need the voice service." : "Sending is not set up for this channel.";
@@ -48,8 +60,17 @@ export async function deliverQueued(input: { clinic: ClinicPool; organizationId:
     } catch (e) {
       logger.error("queued message send failed", { error: e, channel: m.channel });
       error = "Could not send.";
+      httpStatus = null;
     }
-    await setMessageResult(clinic, { locationId, messageId: m.messageId, ok, providerMessageId: id, error });
+    await setMessageResult(clinic, {
+      locationId,
+      messageId: m.messageId,
+      ok,
+      providerMessageId: id,
+      error,
+      // Only a send that reached (or tried to reach) a provider is retried.
+      retry: httpStatus === undefined ? undefined : { httpStatus },
+    });
     if (ok) sent += 1;
     else failed += 1;
   }

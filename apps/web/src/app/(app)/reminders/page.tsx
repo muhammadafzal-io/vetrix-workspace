@@ -1,12 +1,12 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { BellRing, CheckCircle2, Mail, MessageSquareText, PhoneCall } from "lucide-react";
+import { BellRing, CheckCircle2, Mail, MessageSquareText, PauseCircle, PhoneCall } from "lucide-react";
 import { isQuietHours, localParts, reminderCounts, type Species } from "@vetrix/domain";
-import { messagingSettings, previewReminders } from "@vetrix/db/runtime";
-import { getVeterinaryPack } from "@vetrix/pack";
+import { messagingSettings, previewReminders, remindersPaused, retentionStats, type RetentionStats } from "@vetrix/db/runtime";
 import { Panel } from "@/components/patterns/detail-list";
 import { EmptyState } from "@/components/patterns/empty-state";
 import { PageHeader } from "@/components/patterns/page-header";
+import { Alert } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { requirePage } from "@/features/clients/access";
 import { SpeciesIcon } from "@/features/clients/species-icon";
@@ -37,10 +37,16 @@ export default async function RemindersPage({ searchParams }: { searchParams: Pr
   const sandbox = getMessagingMode() === "sandbox";
   const today = clinicToday(shell.location.timezone);
   const asOf = sandbox && sp.asOf && /^\d{4}-\d{2}-\d{2}$/.test(sp.asOf) ? sp.asOf : today;
-  const [{ rows }, settings] = await Promise.all([previewReminders(shell.clinic, shell.location.id, asOf), messagingSettings(shell.clinic, shell.location.id)]);
+  const [{ rows, input }, settings, paused, stats] = await Promise.all([
+    previewReminders(shell.clinic, shell.location.id, asOf),
+    messagingSettings(shell.clinic, shell.location.id),
+    remindersPaused(shell.clinic, shell.location.id),
+    retentionStats(shell.clinic, shell.location.id, today),
+  ]);
   const quiet = isQuietHours(localParts(Date.now(), settings.timezone).minutes, settings.quietStart, settings.quietEnd);
   const counts = reminderCounts(rows);
-  const rules = (getVeterinaryPack().retention as unknown as { rules: Rule[] }).rules.filter((r) => counts.has(`${r.id}:all`) || rows.some((x) => x.ruleId === r.id));
+  // The rules as this clinic runs them (its own schedule where it has one).
+  const rules = (input.rules as Rule[]).filter((r) => counts.has(`${r.id}:all`) || rows.some((x) => x.ruleId === r.id));
   const dueNow = rows.filter((r) => r.nextTouch);
   const visible = rows.filter((r) => (sp.rule ? r.ruleId === sp.rule : true) && (sp.show === "all" ? true : r.nextTouch || r.suppressed || r.lastSent));
   const href = (q: Record<string, string | undefined>) => ({ pathname: "/reminders", query: Object.fromEntries(Object.entries({ asOf: asOf !== today ? asOf : undefined, rule: sp.rule, show: sp.show, ...q }).filter(([, v]) => v)) });
@@ -52,12 +58,30 @@ export default async function RemindersPage({ searchParams }: { searchParams: Pr
         description={asOf === today ? "Who is due for what today, and what goes out next." : `As of ${formatDate(asOf)} (test data date). Sandbox only.`}
       />
 
+      {paused && (
+        <Alert variant="warning" className="mb-6">
+          <PauseCircle aria-hidden />
+          <p>
+            Reminders are paused, so nothing new goes out.{" "}
+            {shell.permissions.has("settings.manage") ? (
+              <Link href="/settings#reminders" className="font-medium underline">
+                Turn them back on in Settings
+              </Link>
+            ) : (
+              "Ask a practice manager to turn them back on."
+            )}
+          </p>
+        </Alert>
+      )}
+
+      <VaccineNumbers stats={stats} sandbox={sandbox} />
+
       <div className="mb-6 grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)]">
         <Panel title="Today's run">
           <p className="text-small text-muted-foreground">
             {dueNow.length} reminder{dueNow.length === 1 ? " is" : "s are"} due to go out. Pets of the same household due within two weeks get one message. Nothing is sent twice, and suppressed pets get nothing.
           </p>
-          {shell.permissions.has("reminders.manage") && <RunButton asOf={asOf} due={dueNow.length} quiet={quiet} />}
+          {shell.permissions.has("reminders.manage") && <RunButton asOf={asOf} due={dueNow.length} quiet={quiet} paused={paused} />}
           {sandbox && (
             <p className="text-caption text-muted-foreground">
               Sandbox: messages are saved under Messages and not sent.{" "}
@@ -173,5 +197,36 @@ export default async function RemindersPage({ searchParams }: { searchParams: Pr
         </ul>
       )}
     </>
+  );
+}
+
+/** Vaccine reminder results: who is overdue now, and what the last 30 days of reminders achieved. */
+function VaccineNumbers({ stats, sandbox }: { stats: RetentionStats; sandbox: boolean }) {
+  const pct = stats.conversion === null ? "–" : `${Math.round(stats.conversion * 100)}%`;
+  const tiles: { label: string; value: string | number; hint?: string; tone?: "warning" | "danger" }[] = [
+    { label: "Overdue 3–6 days", value: stats.overdue3to6, tone: stats.overdue3to6 ? "warning" : undefined },
+    { label: "Overdue 7+ days", value: stats.overdue7plus, hint: "Up to 60 days", tone: stats.overdue7plus ? "warning" : undefined },
+    sandbox ? { label: "Saved (Sandbox)", value: stats.simulated, hint: "Not sent" } : { label: "Sent", value: stats.sent },
+    { label: "Delivered", value: stats.delivered, hint: "Texts with a carrier report" },
+    { label: "Failed", value: stats.failed, hint: stats.pending ? `${stats.pending} waiting to retry` : undefined, tone: stats.failed ? "danger" : undefined },
+    { label: "Vaccinated after a reminder", value: stats.vaccinated, hint: `of ${stats.reminded} reminded` },
+    { label: "Conversion", value: pct, hint: "Vaccinated ÷ reminded" },
+  ];
+  return (
+    <section aria-labelledby="vaccine-numbers" className="mb-6 rounded-xl border bg-card p-5 shadow-card">
+      <div className="mb-4 flex flex-wrap items-baseline justify-between gap-2">
+        <h2 id="vaccine-numbers" className="text-body font-semibold">Vaccine reminders</h2>
+        <p className="text-caption text-muted-foreground">Overdue: today. Messages and results: last 30 days.</p>
+      </div>
+      <dl className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-7">
+        {tiles.map((t) => (
+          <div key={t.label} className="grid content-start gap-0.5 rounded-lg bg-muted/40 px-3 py-2.5">
+            <dt className="text-caption text-muted-foreground">{t.label}</dt>
+            <dd className={cn("text-h3 font-semibold tabular-nums", t.tone === "warning" && "text-warning-text", t.tone === "danger" && "text-destructive")}>{t.value}</dd>
+            {t.hint && <dd className="text-caption text-muted-foreground">{t.hint}</dd>}
+          </div>
+        ))}
+      </dl>
+    </section>
   );
 }

@@ -4,6 +4,7 @@
 //
 // Day arithmetic follows the pack's test generator: 12 months = 365 days,
 // 6 months = 183 days, age in years = days / 365.25.
+import { MAX_OVERDUE_VACCINE_DAYS } from "./reminder-schedule";
 import { fillScript } from "./triage";
 
 export interface RetentionTouch {
@@ -152,7 +153,10 @@ export function dueReminders(input: RetentionInput): DueReminder[] {
     const p = petById.get(patientId);
     if (!p) continue;
     const upcoming = records.filter((r) => days(r.dueAt, asOf) >= 0).sort((a, b) => a.dueAt.localeCompare(b.dueAt));
-    const overdue = records.filter((r) => days(r.dueAt, asOf) < 0).sort((a, b) => a.dueAt.localeCompare(b.dueAt));
+    // Overdue reminders stop after MAX_OVERDUE_VACCINE_DAYS (an old record never starts a burst of messages).
+    const overdue = records
+      .filter((r) => days(r.dueAt, asOf) < 0 && days(r.dueAt, asOf) >= -MAX_OVERDUE_VACCINE_DAYS)
+      .sort((a, b) => a.dueAt.localeCompare(b.dueAt));
     if (upcoming[0]) {
       const first = upcoming[0].dueAt;
       add("vaccine_due", p, first, joinNames(upcoming.filter((r) => days(r.dueAt, first) <= 30).map((r) => r.vaccineName)));

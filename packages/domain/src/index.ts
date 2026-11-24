@@ -15,6 +15,7 @@ export * from "./front-desk";
 export * from "./triage-ai";
 export * from "./messaging";
 export * from "./retention";
+export * from "./reminder-schedule";
 export * from "./replies";
 export * from "./waitlist";
 export * from "./settings";

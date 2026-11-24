@@ -2,7 +2,7 @@
 
 // Send today's due reminders (Sandbox: saved, not sent) and stop one reminder.
 import { revalidatePath } from "next/cache";
-import { ForbiddenError, formatPhone, isQuietHours, localParts, ValidationError } from "@vetrix/domain";
+import { ForbiddenError, formatPhone, isQuietHours, localParts, RuleViolationError, ValidationError } from "@vetrix/domain";
 import { aiPersonaName, messagingSettings, runReminders, stopReminder, withTransaction, type Actor, type RunSummary } from "@vetrix/db/runtime";
 import { clinicToday } from "@/lib/clinic-date";
 import { getMessagingMode } from "@/lib/env";
@@ -55,6 +55,7 @@ export async function runRemindersAction(asOfInput: string): Promise<RunResult> 
     revalidatePath("/messages");
     return { ok: true, summary, sandbox };
   } catch (error) {
+    if (error instanceof RuleViolationError) return { ok: false, error: error.userMessage }; // e.g. reminders paused
     logger.error("reminder run failed", { error });
     return { ok: false, error: error instanceof ValidationError ? error.userMessage : "The run did not finish. Nothing was sent twice; please try again." };
   }

@@ -3,8 +3,8 @@
 // runs whatever is due (daily reminders, the 7 PM fasting check, the 8 PM
 // no-reply tasks). Each job claims its day first, so repeats are harmless.
 import { timingSafeEqual } from "node:crypto";
-import { aiPersonaName, listTenantDatabases, queuedMessages, runDueJobs, withTransaction } from "@vetrix/db/runtime";
-import { formatPhone } from "@vetrix/domain";
+import { aiPersonaName, listTenantDatabases, messagingSettings, queuedMessages, runDueJobs, withTransaction } from "@vetrix/db/runtime";
+import { formatPhone, isQuietHours, localParts } from "@vetrix/domain";
 import { bookingLinkBase } from "@/lib/booking-link";
 import { getEnv, getMessagingMode } from "@/lib/env";
 import { logger } from "@/lib/logger";
@@ -48,10 +48,13 @@ export async function POST(request: Request) {
           const aiName = await aiPersonaName(pool, loc.id);
           const values = { clinicName: loc.name, aiName, clinicPhone: phone(loc.main_phone), bookingLink: "reply to this text", bookingLinkBase: bookingLinkBase(tenant.organization_slug) };
           const r = await withTransaction(pool, (tx) => runDueJobs(tx, { locationId: loc.id, now, sandbox, values }));
-          // Live: send everything queued at this location (this run's messages,
-          // waitlist offers, replies saved by other paths).
+          // Live: send everything queued at this location that is ready (this
+          // run's messages, waitlist offers, replies, retries whose wait is over).
+          // In quiet hours, retried texts wait for the morning.
           if (!sandbox) {
-            await deliverQueued({ clinic: pool, organizationId: tenant.organization_id, locationId: loc.id, clinicName: loc.name, messages: await queuedMessages(pool, loc.id) });
+            const ms = await messagingSettings(pool, loc.id);
+            const quietHours = isQuietHours(localParts(now, ms.timezone).minutes, ms.quietStart, ms.quietEnd);
+            await deliverQueued({ clinic: pool, organizationId: tenant.organization_id, locationId: loc.id, clinicName: loc.name, messages: await queuedMessages(pool, loc.id, 100, { quietHours }) });
           }
           report.push({ organization: tenant.organization_slug, location: loc.name, ran: r.ran });
         } catch (error) {

@@ -457,6 +457,8 @@
     "wellness_overdue_call": "Hi {{client_first_name}}, this is {{ai_name}} from {{clinic_name}}. {{pet_name}} is a little overdue for a wellness exam. I have {{slot_1}} or {{slot_2}} if either works.",
     "vaccine_due_30": "{{clinic_name}}: {{pet_name}} is due for {{vaccine_names}} next month. Book: {{booking_link}} Reply STOP to opt out.",
     "vaccine_due_7": "{{clinic_name}}: {{pet_name}}'s {{vaccine_names}} is due next week. Book: {{booking_link}}",
+    "vaccine_overdue_3": "{{clinic_name}}: {{pet_name}}'s {{vaccine_names}} is now overdue. Book: {{booking_link}} Reply STOP to opt out.",
+    "vaccine_overdue_7": "{{clinic_name}}: {{pet_name}}'s {{vaccine_names}} is over a week overdue. Book soon to keep {{pet_name}} protected: {{booking_link}}",
     "vaccine_overdue_call": "Hi {{client_first_name}}, this is {{ai_name}} from {{clinic_name}}. {{pet_name}}'s {{vaccine_names}} is now overdue. I can get that done {{slot_1}} or {{slot_2}}.",
     "heartworm_due": "{{clinic_name}}: {{pet_name}}'s annual heartworm test is coming up. We can do it at the wellness exam: {{booking_link}}",
     "prevention_refill": "{{clinic_name}}: {{pet_name}}'s {{product_name}} runs out in about 10 days. Reply REFILL and we'll have it ready for pickup.",

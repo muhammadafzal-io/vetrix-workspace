@@ -41,8 +41,9 @@ async function claim(db: SqlClient, locationId: string, job: string, date: strin
 }
 
 export async function runDueJobs(db: SqlClient, input: { locationId: string; now: number; sandbox: boolean; values: JobValues }): Promise<JobResult> {
-  const { rows } = await db.query<{ timezone: string; quiet_start: string | null; quiet_end: string | null }>(
-    `SELECT l.timezone, to_char(ms.quiet_start, 'HH24:MI') AS quiet_start, to_char(ms.quiet_end, 'HH24:MI') AS quiet_end
+  const { rows } = await db.query<{ timezone: string; quiet_start: string | null; quiet_end: string | null; paused: boolean }>(
+    `SELECT l.timezone, to_char(ms.quiet_start, 'HH24:MI') AS quiet_start, to_char(ms.quiet_end, 'HH24:MI') AS quiet_end,
+            ms.reminders_paused_at IS NOT NULL AS paused
      FROM locations l LEFT JOIN location_messaging_settings ms ON ms.location_id = l.id WHERE l.id = $1`,
     [input.locationId],
   );
@@ -58,9 +59,9 @@ export async function runDueJobs(db: SqlClient, input: { locationId: string; now
   const quietStart = loc.quiet_start ?? "20:00";
   const quietEnd = loc.quiet_end ?? "08:00";
 
-  // 1. Daily reminders.
+  // 1. Daily reminders (not while paused; the day is not claimed, so it runs once they are turned back on).
   const remindersAt = Math.max(toMin(pack.engine.run_daily_at_local), toMin(quietEnd));
-  if (here.minutes >= remindersAt && !isQuietHours(here.minutes, quietStart, quietEnd) && (await claim(db, input.locationId, "reminders", here.date))) {
+  if (!loc.paused && here.minutes >= remindersAt && !isQuietHours(here.minutes, quietStart, quietEnd) && (await claim(db, input.locationId, "reminders", here.date))) {
     const r = await runReminders(db, { locationId: input.locationId, asOf: here.date, sandbox: input.sandbox, quietHours: false, values: input.values, actor: SYSTEM });
     result.ran.push("reminders");
     result.reminders = r.summary;

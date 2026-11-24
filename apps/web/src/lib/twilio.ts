@@ -87,7 +87,7 @@ export interface SmsResult {
 /** Sends one text through Twilio's REST API. */
 export async function sendSms(
   config: { accountSid: string; authToken: string },
-  input: { from: string; to: string; body: string },
+  input: { from: string; to: string; body: string; /** Twilio posts delivery reports here. */ statusCallback?: string },
   fetchImpl: typeof fetch = fetch,
 ): Promise<SmsResult> {
   const res = await fetchImpl(`https://api.twilio.com/2010-04-01/Accounts/${encodeURIComponent(config.accountSid)}/Messages.json`, {
@@ -96,7 +96,7 @@ export async function sendSms(
       authorization: `Basic ${Buffer.from(`${config.accountSid}:${config.authToken}`).toString("base64")}`,
       "content-type": "application/x-www-form-urlencoded",
     },
-    body: new URLSearchParams({ From: input.from, To: input.to, Body: input.body }),
+    body: new URLSearchParams({ From: input.from, To: input.to, Body: input.body, ...(input.statusCallback ? { StatusCallback: input.statusCallback } : {}) }),
     signal: AbortSignal.timeout(10_000),
   });
   const json = (await res.json().catch(() => ({}))) as { sid?: string };

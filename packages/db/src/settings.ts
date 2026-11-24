@@ -4,6 +4,10 @@
 import {
   canBookOnline,
   NotFoundError,
+  templateChoices,
+  validateReminderSchedule,
+  type RetentionRule,
+  type ScheduleTouch,
   RuleViolationError,
   type ClinicDetails,
   type FrontDeskSettings,
@@ -24,12 +28,38 @@ export interface LocationSettings {
   policies: PolicySettings;
   messaging: MessagingSettingsInput;
   reminderRules: { id: string; name: string; enabled: boolean; running: boolean }[];
+  /** Paused: no reminder goes out at this location until turned back on. */
+  remindersPaused: boolean;
+  /** Rules whose schedule this clinic can change, with the schedule in use. */
+  reminderSchedules: ReminderScheduleView[];
   services: { id: string; name: string; category: string; durationMin: number; active: boolean; bookableOnline: boolean; canBookOnline: boolean }[];
   widget: { enabled: boolean; origins: string[] };
 }
 
+export interface ReminderScheduleView {
+  ruleId: string;
+  name: string;
+  /** The schedule in use: the clinic's own, or the pack default. */
+  touches: ScheduleTouch[];
+  packTouches: ScheduleTouch[];
+  custom: boolean;
+  /** Messages this rule may use, with their text. */
+  templates: { key: string; text: string }[];
+}
+
+/** Reminders whose days, channels and messages a clinic may change (Settings → Reminders). */
+export const EDITABLE_SCHEDULES = new Set(["vaccine_due"]);
+
+interface PackRetentionForSchedules {
+  rules: RetentionRule[];
+  templates: Record<string, string>;
+}
+const retentionPack = () => getVeterinaryPack().retention as unknown as PackRetentionForSchedules;
+const asScheduleTouches = (rule: RetentionRule): ScheduleTouch[] =>
+  rule.touches.map((t) => ({ offset_days: t.offset_days ?? Math.floor((t.offset_hours ?? 0) / 24), channels: t.channels, template: t.template }));
+
 export async function loadSettings(db: SqlClient, locationId: string): Promise<LocationSettings> {
-  const [loc, hours, holidays, rules, services] = await Promise.all([
+  const [loc, hours, holidays, rules, services, paused] = await Promise.all([
     db.query<{
       name: string; address: string | null; main_phone: string | null; website: string | null; timezone: string;
       ai_persona_name: string | null; emergency_transfer_number: string | null;
@@ -61,11 +91,15 @@ export async function loadSettings(db: SqlClient, locationId: string): Promise<L
       `SELECT id, to_char(holiday_date, 'YYYY-MM-DD') AS date, name FROM location_holidays WHERE location_id = $1 ORDER BY holiday_date`,
       [locationId],
     ),
-    db.query<{ pack_rule_id: string; enabled: boolean }>(`SELECT pack_rule_id, enabled FROM reminder_rules WHERE location_id = $1`, [locationId]),
+    db.query<{ pack_rule_id: string; enabled: boolean; overrides: { touches?: unknown } | null }>(
+      `SELECT pack_rule_id, enabled, overrides FROM reminder_rules WHERE location_id = $1`,
+      [locationId],
+    ),
     db.query<{ id: string; pack_service_id: string; name: string; category: string; duration_min: number; active: boolean; bookable_online: boolean }>(
       `SELECT id, pack_service_id, name, category, duration_min, active, bookable_online FROM services WHERE location_id = $1 ORDER BY category, name`,
       [locationId],
     ),
+    db.query<{ paused: boolean }>(`SELECT reminders_paused_at IS NOT NULL AS paused FROM location_messaging_settings WHERE location_id = $1`, [locationId]),
   ]);
   const l = loc.rows[0];
   if (!l) throw new NotFoundError("Location", locationId);
@@ -99,6 +133,22 @@ export async function loadSettings(db: SqlClient, locationId: string): Promise<L
     reminderRules: packRules
       .filter((r) => enabled.has(r.id))
       .map((r) => ({ id: r.id, name: r.name, enabled: enabled.get(r.id)!, running: ENGINE_RULES.has(r.id) })),
+    remindersPaused: paused.rows[0]?.paused ?? false,
+    reminderSchedules: rules.rows
+      .filter((r) => EDITABLE_SCHEDULES.has(r.pack_rule_id))
+      .flatMap((r) => {
+        const rule = retentionPack().rules.find((x) => x.id === r.pack_rule_id);
+        if (!rule) return [];
+        const keys = templateChoices(rule, Object.keys(retentionPack().templates));
+        let own: ScheduleTouch[] | null = null;
+        try {
+          own = r.overrides?.touches ? validateReminderSchedule(r.overrides.touches, new Set(keys)) : null;
+        } catch {
+          own = null; // no longer valid: the pack default runs (see withClinicSchedule)
+        }
+        const packTouches = asScheduleTouches(rule);
+        return [{ ruleId: rule.id, name: rule.name, touches: own ?? packTouches, packTouches, custom: own !== null, templates: keys.map((key) => ({ key, text: retentionPack().templates[key]! })) }];
+      }),
     services: services.rows.map((s) => ({
       id: s.id,
       name: s.name,
@@ -200,6 +250,43 @@ export async function setReminderRuleEnabled(db: SqlClient, ctx: Ctx, packRuleId
   const { rows } = await db.query(`UPDATE reminder_rules SET enabled = $3 WHERE location_id = $1 AND pack_rule_id = $2 RETURNING 1`, [ctx.locationId, packRuleId, enabled]);
   if (!rows[0]) throw new NotFoundError("Reminder", packRuleId);
   await writeAudit(db, { locationId: ctx.locationId, actor: ctx.actor, action: "settings.reminder_rule", entityType: "location", entityId: ctx.locationId, changes: { rule: packRuleId, enabled } });
+}
+
+/** Pauses or resumes every reminder at this location. Messages already queued are not affected. */
+export async function setRemindersPaused(db: SqlClient, ctx: Ctx, paused: boolean): Promise<void> {
+  await db.query(
+    `INSERT INTO location_messaging_settings (location_id, reminders_paused_at) VALUES ($1, CASE WHEN $2 THEN now() END)
+     ON CONFLICT (location_id) DO UPDATE SET reminders_paused_at = CASE WHEN $2 THEN coalesce(location_messaging_settings.reminders_paused_at, now()) END`,
+    [ctx.locationId, paused],
+  );
+  await writeAudit(db, { locationId: ctx.locationId, actor: ctx.actor, action: paused ? "settings.reminders_paused" : "settings.reminders_resumed", entityType: "location", entityId: ctx.locationId, changes: { paused } });
+}
+
+/**
+ * Saves this clinic's own schedule for one reminder, or goes back to the pack
+ * default with `touches: null`. Checked by validateReminderSchedule.
+ */
+export async function saveReminderSchedule(db: SqlClient, ctx: Ctx, packRuleId: string, touches: unknown[] | null): Promise<void> {
+  if (!EDITABLE_SCHEDULES.has(packRuleId)) throw new NotFoundError("Reminder", packRuleId);
+  const rule = retentionPack().rules.find((r) => r.id === packRuleId);
+  if (!rule) throw new NotFoundError("Reminder", packRuleId);
+  const valid = touches === null ? null : validateReminderSchedule(touches, new Set(templateChoices(rule, Object.keys(retentionPack().templates))));
+  const { rows } = await db.query<{ before: unknown }>(
+    `UPDATE reminder_rules r SET overrides = CASE WHEN $3::jsonb IS NULL THEN r.overrides - 'touches' ELSE r.overrides || jsonb_build_object('touches', $3::jsonb) END
+     FROM (SELECT overrides -> 'touches' AS before FROM reminder_rules WHERE location_id = $1 AND pack_rule_id = $2) old
+     WHERE r.location_id = $1 AND r.pack_rule_id = $2
+     RETURNING old.before`,
+    [ctx.locationId, packRuleId, valid === null ? null : JSON.stringify(valid)],
+  );
+  if (!rows[0]) throw new NotFoundError("Reminder", packRuleId);
+  await writeAudit(db, {
+    locationId: ctx.locationId,
+    actor: ctx.actor,
+    action: "settings.reminder_schedule",
+    entityType: "location",
+    entityId: ctx.locationId,
+    changes: { rule: packRuleId, touches: [rows[0].before ?? "pack default", valid ?? "pack default"] },
+  });
 }
 
 export async function setServiceActive(db: SqlClient, ctx: Ctx, serviceId: string, active: boolean): Promise<void> {

@@ -6,14 +6,14 @@ import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { runRemindersAction, stopReminderAction, type RunResult } from "./actions";
 
-export function RunButton({ asOf, due, quiet }: { asOf: string; due: number; quiet: boolean }) {
+export function RunButton({ asOf, due, quiet, paused = false }: { asOf: string; due: number; quiet: boolean; paused?: boolean }) {
   const [pending, start] = useTransition();
   const [result, setResult] = useState<RunResult | null>(null);
   const run = () => start(async () => setResult(await runRemindersAction(asOf)));
   return (
     <div className="grid gap-3">
       <div className="flex flex-wrap items-center gap-3">
-        <Button onClick={run} disabled={pending || due === 0}>
+        <Button onClick={run} disabled={pending || due === 0 || paused}>
           {pending ? <Loader2 className="animate-spin" aria-hidden /> : <Send aria-hidden />}
           {pending ? "Sending…" : `Send ${due} due reminder${due === 1 ? "" : "s"}`}
         </Button>

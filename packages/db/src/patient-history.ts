@@ -12,6 +12,7 @@ import {
   type VisitOutcomeInput,
 } from "@vetrix/domain";
 import { writeAudit, type Actor } from "./clients";
+import { closeVaccinatedReminders } from "./retention";
 import type { SqlClient } from "./sql-client";
 
 interface VisitRow {
@@ -138,6 +139,8 @@ export async function completeVisit(
     entityId: visit.id,
     changes: { status: [visit.status, "completed"], weight_kg: outcome.weightKg, vaccines: outcome.vaccineIds },
   });
+  // A vaccine given now ends the reminders about its old due date.
+  if (vaccinesRecorded.length > 0) await closeVaccinatedReminders(db, input.locationId, visit.patient_id);
   return { weightKg: outcome.weightKg, vaccinesRecorded };
 }
 

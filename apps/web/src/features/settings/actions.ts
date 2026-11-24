@@ -23,7 +23,9 @@ import {
   saveWeekHours,
   saveWidgetSettings,
   setServiceBookableOnline,
+  saveReminderSchedule,
   setReminderRuleEnabled,
+  setRemindersPaused,
   setServiceActive,
   withTransaction,
   type Actor,
@@ -90,6 +92,24 @@ export async function setReminderRuleAction(ruleId: string, enabled: boolean): P
   return save(null, enabled ? "Reminder turned on." : "Reminder turned off.", (tx, ctx) => {
     if (!RULE_ID.test(ruleId)) throw new ValidationError("Choose a reminder.");
     return setReminderRuleEnabled(tx, ctx, ruleId, enabled);
+  });
+}
+
+export async function setRemindersPausedAction(paused: boolean): Promise<ActionResult> {
+  return save(null, paused ? "Reminders paused. Nothing new goes out until you turn them back on." : "Reminders are on again. Today's run goes out shortly.", (tx, ctx) =>
+    setRemindersPaused(tx, ctx, paused),
+  );
+}
+
+/**
+ * Saves this clinic's own schedule for one reminder, or (touches null) goes
+ * back to the pack default. Rules are checked in @vetrix/domain.
+ */
+export async function saveReminderScheduleAction(ruleId: string, touches: unknown[] | null): Promise<ActionResult> {
+  return save(null, touches ? "Reminder schedule saved. The next daily run uses it." : "Back to the standard schedule.", (tx, ctx) => {
+    if (!RULE_ID.test(ruleId)) throw new ValidationError("Choose a reminder.");
+    if (touches !== null && !Array.isArray(touches)) throw new ValidationError("Add at least one reminder.");
+    return saveReminderSchedule(tx, ctx, ruleId, touches);
   });
 }
 

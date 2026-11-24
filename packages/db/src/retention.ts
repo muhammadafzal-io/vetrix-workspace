@@ -3,9 +3,12 @@
 // and messages), and stop a reminder.
 import {
   dueReminders,
+  MAX_OVERDUE_VACCINE_DAYS,
   NotFoundError,
   planSends,
+  RuleViolationError,
   ValidationError,
+  withClinicSchedule,
   type DueReminder,
   type RetentionInput,
   type RetentionRule,
@@ -34,7 +37,7 @@ export const ENGINE_RULES = new Set(["annual_wellness", "senior_recheck", "vacci
 export async function loadRetentionInput(db: SqlClient, locationId: string, asOf: string): Promise<RetentionInput & { stopped: Set<string> }> {
   if (!ISO.test(asOf)) throw new ValidationError("Choose a date.");
   const [enabled, patients, clients, vaccines, prevention, noShows, booked, stopped] = await Promise.all([
-    db.query<{ pack_rule_id: string }>(`SELECT pack_rule_id FROM reminder_rules WHERE location_id = $1 AND enabled`, [locationId]),
+    db.query<{ pack_rule_id: string; overrides: unknown }>(`SELECT pack_rule_id, overrides FROM reminder_rules WHERE location_id = $1 AND enabled`, [locationId]),
     db.query<RetentionInput["patients"][number]>(
       `SELECT p.id, p.client_id AS "clientId", p.name, p.species, to_char(p.date_of_birth, 'YYYY-MM-DD') AS "dateOfBirth",
               p.approx_age_months AS "approxAgeMonths", p.status,
@@ -80,10 +83,14 @@ export async function loadRetentionInput(db: SqlClient, locationId: string, asOf
       [locationId],
     ),
   ]);
-  const on = new Set(enabled.rows.map((r) => r.pack_rule_id));
+  // Each enabled rule with this clinic's own schedule, when it has one.
+  const overrides = new Map(enabled.rows.map((r) => [r.pack_rule_id, r.overrides]));
+  const templateKeys = Object.keys(pack().templates);
   return {
     asOf,
-    rules: pack().rules.filter((r) => on.has(r.id) && ENGINE_RULES.has(r.id)),
+    rules: pack()
+      .rules.filter((r) => overrides.has(r.id) && ENGINE_RULES.has(r.id))
+      .map((r) => withClinicSchedule(r, overrides.get(r.id), templateKeys)),
     patients: patients.rows,
     clients: clients.rows,
     vaccines: vaccines.rows,
@@ -160,6 +167,10 @@ export async function runReminders(
   db: SqlClient,
   input: { locationId: string; asOf: string; sandbox: boolean; quietHours: boolean; values: { clinicName: string; aiName: string; clinicPhone: string; bookingLink: string; /** Online booking page base, e.g. https://app/b/clinic-slug: each message gets its own link. */ bookingLinkBase?: string }; actor: Actor },
 ): Promise<{ summary: RunSummary; outbound: { messageId: string; clientId: string; channel: SendPlan["channel"]; body: string }[] }> {
+  if (await remindersPaused(db, input.locationId)) {
+    throw new RuleViolationError("reminders.paused", "Reminders are paused for this clinic. Turn them back on in Settings → Reminders.");
+  }
+  await closeVaccinatedReminders(db, input.locationId);
   const { rows, input: data } = await previewReminders(db, input.locationId, input.asOf);
   const sent = await sentTouches(db, input.locationId);
   // Personal booking links: one per message, saved with the message below.
@@ -283,4 +294,108 @@ export async function stopReminder(
     [rule.rows[0].id, input.patientId, input.dueAt],
   );
   await writeAudit(db, { locationId: input.locationId, actor: input.actor, action: "reminder.stopped", entityType: "reminder", entityId: rows[0]!.id, changes: { rule: input.ruleId } });
+}
+
+/** Whether this location's reminders are paused (Settings → Reminders). */
+export async function remindersPaused(db: SqlClient, locationId: string): Promise<boolean> {
+  const { rows } = await db.query<{ paused: boolean }>(
+    `SELECT reminders_paused_at IS NOT NULL AS paused FROM location_messaging_settings WHERE location_id = $1`,
+    [locationId],
+  );
+  return rows[0]?.paused ?? false;
+}
+
+/**
+ * Closes open vaccine reminders once the vaccine they were about has been
+ * given again (a newer record of the same vaccine with a later due date), so
+ * nothing more goes out for the old date. Marked completed with the reason
+ * "vaccinated", which the retention numbers count. Runs before every
+ * reminder run and when a visit records vaccines.
+ */
+export async function closeVaccinatedReminders(db: SqlClient, locationId: string, patientId?: string): Promise<number> {
+  const { rows } = await db.query(
+    `UPDATE reminders r SET status = 'completed', stopped_at = now(), stop_reason = 'vaccinated'
+     FROM reminder_rules rr
+     WHERE rr.id = r.rule_id AND rr.location_id = $1 AND rr.pack_rule_id = 'vaccine_due' AND r.status = 'open'
+       AND ($2::uuid IS NULL OR r.patient_id = $2::uuid)
+       AND EXISTS (
+         SELECT 1 FROM vaccine_records old JOIN vaccine_records new ON new.patient_id = old.patient_id AND new.vaccine_id = old.vaccine_id
+         WHERE old.patient_id = r.patient_id AND old.due_at = r.due_at AND new.due_at > r.due_at
+       )
+     RETURNING r.id`,
+    [locationId, patientId ?? null],
+  );
+  return rows.length;
+}
+
+export interface RetentionStats {
+  /** Pets whose vaccines are 3 to 6 days overdue, and 7 to 60 days overdue (reminders stop after 60). */
+  overdue3to6: number;
+  overdue7plus: number;
+  /** Vaccine reminder messages in the period, by what happened to them. */
+  sent: number;
+  delivered: number;
+  failed: number;
+  /** Still waiting to send, including retries. */
+  pending: number;
+  /** Sandbox: recorded, not sent. */
+  simulated: number;
+  /** Reminders that got at least one message in the period, and how many of those pets were vaccinated since. */
+  reminded: number;
+  vaccinated: number;
+  /** vaccinated ÷ reminded, 0 to 1 (null when nothing was reminded). */
+  conversion: number | null;
+}
+
+/** The vaccine reminder numbers for the Reminders page. `today` is the clinic date. */
+export async function retentionStats(db: SqlClient, locationId: string, today: string, periodDays = 30): Promise<RetentionStats> {
+  if (!ISO.test(today)) throw new ValidationError("Choose a date.");
+  const [overdue, messages, outcomes] = await Promise.all([
+    // A pet counts once, by its most overdue vaccine; inactive pets are left out.
+    db.query<{ d3: number; d7: number }>(
+      `WITH latest AS (
+         SELECT v.patient_id, v.vaccine_id, max(v.due_at) AS due_at
+         FROM vaccine_records v JOIN patients p ON p.id = v.patient_id
+         WHERE p.location_id = $1 AND p.status = 'active'
+         GROUP BY v.patient_id, v.vaccine_id
+       ), worst AS (
+         SELECT patient_id, $2::date - min(due_at) AS days FROM latest WHERE due_at < $2::date GROUP BY patient_id
+       )
+       SELECT count(*) FILTER (WHERE days BETWEEN 3 AND 6)::int AS d3,
+              count(*) FILTER (WHERE days BETWEEN 7 AND $3::int)::int AS d7
+       FROM worst`,
+      [locationId, today, MAX_OVERDUE_VACCINE_DAYS],
+    ),
+    db.query<{ status: string; n: number }>(
+      `SELECT m.status, count(DISTINCT m.id)::int AS n
+       FROM reminder_touches t JOIN reminders r ON r.id = t.reminder_id JOIN reminder_rules rr ON rr.id = r.rule_id
+       JOIN messages m ON m.id = t.message_id
+       WHERE rr.location_id = $1 AND rr.pack_rule_id = 'vaccine_due' AND m.created_at >= $2::date - $3::int
+       GROUP BY m.status`,
+      [locationId, today, periodDays],
+    ),
+    db.query<{ reminded: number; vaccinated: number }>(
+      `SELECT count(*)::int AS reminded, count(*) FILTER (WHERE r.status = 'completed' AND r.stop_reason = 'vaccinated')::int AS vaccinated
+       FROM reminders r JOIN reminder_rules rr ON rr.id = r.rule_id
+       WHERE rr.location_id = $1 AND rr.pack_rule_id = 'vaccine_due' AND r.touches_sent > 0
+         AND EXISTS (SELECT 1 FROM reminder_touches t WHERE t.reminder_id = r.id AND t.status = 'sent' AND t.scheduled_for >= $2::date - $3::int)`,
+      [locationId, today, periodDays],
+    ),
+  ]);
+  const by = new Map(messages.rows.map((r) => [r.status, r.n]));
+  const n = (s: string) => by.get(s) ?? 0;
+  const { reminded, vaccinated } = outcomes.rows[0] ?? { reminded: 0, vaccinated: 0 };
+  return {
+    overdue3to6: overdue.rows[0]?.d3 ?? 0,
+    overdue7plus: overdue.rows[0]?.d7 ?? 0,
+    // Delivered texts were sent too.
+    sent: n("sent") + n("delivered"),
+    delivered: n("delivered"),
+    failed: n("failed"),
+    pending: n("queued"),
+    simulated: n("simulated"),
+    reminded,
+    vaccinated,
+    conversion: reminded > 0 ? vaccinated / reminded : null,
+  };
 }
