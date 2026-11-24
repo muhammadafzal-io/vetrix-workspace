@@ -356,11 +356,34 @@ export interface CampaignSendValues {
 
 const hashToken = (t: string) => createHash("sha256").update(t).digest("hex");
 
+/** Consent and contact details for the clients a run may message. */
+async function loadCampaignClients(db: SqlClient, clientIds: string[], campaignId: string): Promise<Map<string, CampaignClient>> {
+  if (clientIds.length === 0) return new Map();
+  const { rows } = await db.query<{ id: string; first_name: string; marketing_consent: boolean; sms_consent: boolean; email: string | null; flags: string[]; last_campaign_at: Date | null }>(
+    `SELECT c.id, c.first_name, c.marketing_consent, c.sms_consent, c.email,
+            coalesce((SELECT array_agg(f.flag) FROM client_flags f WHERE f.client_id = c.id), '{}') AS flags,
+            (SELECT max(r.created_at) FROM campaign_recipients r WHERE r.client_id = c.id AND r.status = 'sent' AND r.campaign_id <> $2) AS last_campaign_at
+     FROM clients c WHERE c.id = ANY($1::uuid[])`,
+    [clientIds, campaignId],
+  );
+  return new Map(
+    rows.map((c) => [c.id, { id: c.id, firstName: c.first_name, marketingConsent: c.marketing_consent, smsConsent: c.sms_consent, email: c.email, flags: c.flags, lastCampaignAt: c.last_campaign_at }]),
+  );
+}
+
 /**
  * Sends what is due: scheduled campaigns whose time has come and campaigns
- * still sending. Each run creates at most CAMPAIGN_BATCH_SIZE messages per
- * location; the audience and consent are checked again at send time. In
- * quiet hours only emails go out; texts wait. Sandbox: saved as simulated.
+ * still sending.
+ *
+ * 1. When a campaign starts, its audience is fixed: one 'pending' row per
+ *    matching client and channel, with the pets it is about. Clients who
+ *    match later are not added (decided 24 Nov 2026).
+ * 2. Each run works through the pending rows. Consent, do-not-contact, the
+ *    7-day limit and the pets still being active are checked again as each
+ *    message goes out; a pet no longer active is left out of the message.
+ *
+ * At most CAMPAIGN_BATCH_SIZE messages per location per run. In quiet hours
+ * texts wait; emails go. Sandbox: saved as simulated.
  */
 export async function runDueCampaigns(
   db: SqlClient,
@@ -376,8 +399,8 @@ export async function runDueCampaigns(
   },
 ): Promise<{ campaigns: number; sent: number; skipped: number; finished: number }> {
   const result = { campaigns: 0, sent: 0, skipped: 0, finished: 0 };
-  const { rows: due } = await db.query<{ id: string; status: CampaignStatus; audience: Audience; channels: CampaignChannel[] }>(
-    `SELECT id, status, audience, channels FROM campaigns
+  const { rows: due } = await db.query<{ id: string; status: CampaignStatus; audience: Audience; channels: CampaignChannel[]; audience_fixed_at: Date | null }>(
+    `SELECT id, status, audience, channels, audience_fixed_at FROM campaigns
      WHERE location_id = $1 AND (status = 'sending' OR (status = 'scheduled' AND send_at <= $2))
        AND ($3::uuid IS NULL OR id = $3::uuid)
      ORDER BY send_at FOR UPDATE SKIP LOCKED`,
@@ -391,59 +414,80 @@ export async function runDueCampaigns(
       await db.query(`UPDATE campaigns SET status = 'sending', started_at = now(), updated_at = now() WHERE id = $1`, [c.id]);
       await writeAudit(db, { locationId: input.locationId, actor: { type: "system", id: null }, action: "campaign.sending", entityType: "campaign", entityId: c.id });
     }
+
+    // 1. Fix the audience once. Rows already written (e.g. by a run before this
+    //    rule existed) stay as they are.
+    if (!c.audience_fixed_at) {
+      const data = await loadAudienceData(db, input.locationId, input.today, c.id);
+      const selected = [...selectAudience(c.audience, data.pets, input.today)];
+      const snap = selected.flatMap(([clientId, pets]) => c.channels.map((channel) => ({ clientId, channel, petIds: pets.map((p) => p.id), petNames: joinPetNames(pets.map((p) => p.name)) })));
+      if (snap.length) {
+        await db.query(
+          `INSERT INTO campaign_recipients (campaign_id, client_id, channel, status, pet_ids, pet_names)
+           SELECT $1, u.client_id, u.channel, 'pending', string_to_array(u.pet_ids, ',')::uuid[], u.pet_names
+           FROM unnest($2::uuid[], $3::text[], $4::text[], $5::text[]) AS u(client_id, channel, pet_ids, pet_names)
+           ON CONFLICT (campaign_id, client_id, channel) DO NOTHING`,
+          [c.id, snap.map((r) => r.clientId), snap.map((r) => r.channel), snap.map((r) => r.petIds.join(",")), snap.map((r) => r.petNames)],
+        );
+      }
+      await db.query(`UPDATE campaigns SET audience_fixed_at = now() WHERE id = $1`, [c.id]);
+      await writeAudit(db, { locationId: input.locationId, actor: { type: "system", id: null }, action: "campaign.audience_fixed", entityType: "campaign", entityId: c.id, changes: { clients: selected.length } });
+    }
+
+    // 2. Work through the waiting rows.
+    const { rows: pending } = await db.query<{ id: string; client_id: string; channel: CampaignChannel; pet_ids: string[] }>(
+      `SELECT id, client_id, channel, pet_ids FROM campaign_recipients WHERE campaign_id = $1 AND status = 'pending' ORDER BY created_at, client_id, channel`,
+      [c.id],
+    );
     const content = await db.query<{ channel: CampaignChannel; subject: string | null; body: string }>(
       `SELECT channel, subject, body FROM campaign_content WHERE campaign_id = $1 AND approved`,
       [c.id],
     );
     const approved = new Map(content.rows.map((r) => [r.channel, r]));
-    const done = new Set(
-      (await db.query<{ k: string }>(`SELECT client_id || '|' || channel AS k FROM campaign_recipients WHERE campaign_id = $1`, [c.id])).rows.map((r) => r.k),
+    const clients = await loadCampaignClients(db, [...new Set(pending.map((p) => p.client_id))], c.id);
+    const activePets = new Map(
+      (await db.query<{ id: string; name: string }>(`SELECT id, name FROM patients WHERE id = ANY($1::uuid[]) AND status = 'active'`, [[...new Set(pending.flatMap((p) => p.pet_ids))]])).rows.map(
+        (p) => [p.id, p.name],
+      ),
     );
-    const data = await loadAudienceData(db, input.locationId, input.today, c.id);
-    const selected = selectAudience(c.audience, data.pets, input.today);
-    // The 7-day limit ignores this campaign's own messages (loadAudienceData), so a
-    // client can get both its text and its email; every other check applies per channel.
-    let waiting = 0;
-    type Row = { clientId: string; channel: CampaignChannel; status: "sent" | "skipped"; reason: SkipReason | null; messageId: string | null; petNames: string; token: string | null };
-    const rows: Row[] = [];
-    const messages: { id: string; clientId: string; channel: CampaignChannel; subject: string | null; body: string }[] = [];
 
-    for (const [clientId, pets] of selected) {
-      const client = data.clients.get(clientId);
-      if (!client) continue;
-      const petNames = joinPetNames(pets.map((p) => p.name));
-      for (const channel of c.channels) {
-        if (done.has(`${clientId}|${channel}`)) continue;
-        if (channel === "sms" && input.quietHours) {
-          waiting += 1;
-          continue;
-        }
-        const reason = campaignEligibility(client, channel, input.now);
-        if (reason) {
-          rows.push({ clientId, channel, status: "skipped", reason, messageId: null, petNames, token: null });
-          continue;
-        }
-        if (budget <= 0) {
-          waiting += 1;
-          continue;
-        }
-        const msg = approved.get(channel);
-        if (!msg) throw new RuleViolationError("campaign.content", "The campaign has no approved message for this channel.");
-        const token = channel === "email" ? randomBytes(24).toString("base64url") : null;
-        const values = {
-          client_first_name: client.firstName,
-          pet_names: petNames,
-          clinic_name: input.values.clinicName,
-          clinic_phone: input.values.clinicPhone,
-          booking_link: input.values.bookingUrl ?? `call ${input.values.clinicPhone}`,
-        };
-        let body = fillCampaignMessage(msg.body, channel, values);
-        if (token) body += `\n\n--\nYou are getting this because you agreed to hear from ${input.values.clinicName}. Stop these emails: ${input.values.unsubscribeBase}/${token}`;
-        const id = randomUUID();
-        messages.push({ id, clientId, channel, subject: msg.subject ? fillCampaignMessage(msg.subject, "email", values) : null, body });
-        rows.push({ clientId, channel, status: "sent", reason: null, messageId: id, petNames, token });
-        budget -= 1;
+    let waiting = 0;
+    const skipped: { id: string; reason: SkipReason }[] = [];
+    const sent: { id: string; messageId: string; petNames: string; token: string | null }[] = [];
+    const messages: { id: string; clientId: string; channel: CampaignChannel; subject: string | null; body: string }[] = [];
+    for (const r of pending) {
+      if (r.channel === "sms" && input.quietHours) {
+        waiting += 1;
+        continue;
       }
+      const client = clients.get(r.client_id);
+      const pets = r.pet_ids.map((id) => activePets.get(id)).filter((n): n is string => Boolean(n));
+      const reason: SkipReason | null = !client ? "do_not_contact" : pets.length === 0 ? "pet_not_active" : campaignEligibility(client, r.channel, input.now);
+      if (reason) {
+        skipped.push({ id: r.id, reason });
+        continue;
+      }
+      if (budget <= 0) {
+        waiting += 1;
+        continue;
+      }
+      const msg = approved.get(r.channel);
+      if (!msg) throw new RuleViolationError("campaign.content", "The campaign has no approved message for this channel.");
+      const token = r.channel === "email" ? randomBytes(24).toString("base64url") : null;
+      const petNames = joinPetNames(pets);
+      const values = {
+        client_first_name: client!.firstName,
+        pet_names: petNames,
+        clinic_name: input.values.clinicName,
+        clinic_phone: input.values.clinicPhone,
+        booking_link: input.values.bookingUrl ?? `call ${input.values.clinicPhone}`,
+      };
+      let body = fillCampaignMessage(msg.body, r.channel, values);
+      if (token) body += `\n\n--\nYou are getting this because you agreed to hear from ${input.values.clinicName}. Stop these emails: ${input.values.unsubscribeBase}/${token}`;
+      const messageId = randomUUID();
+      messages.push({ id: messageId, clientId: r.client_id, channel: r.channel, subject: msg.subject ? fillCampaignMessage(msg.subject, "email", values) : null, body });
+      sent.push({ id: r.id, messageId, petNames, token });
+      budget -= 1;
     }
 
     if (messages.length) {
@@ -454,19 +498,22 @@ export async function runDueCampaigns(
         [input.locationId, input.sandbox ? "simulated" : "queued", input.sandbox ? new Date(input.now) : null,
          messages.map((m) => m.id), messages.map((m) => m.clientId), messages.map((m) => m.channel), messages.map((m) => m.subject), messages.map((m) => m.body)],
       );
-    }
-    if (rows.length) {
+      // created_at marks when the client was messaged (the 7-day limit reads it).
       await db.query(
-        `INSERT INTO campaign_recipients (campaign_id, client_id, channel, status, skip_reason, message_id, pet_names, unsubscribe_token_hash)
-         SELECT $1, u.client_id, u.channel, u.status, u.reason, u.message_id, u.pet_names, u.token_hash
-         FROM unnest($2::uuid[], $3::text[], $4::text[], $5::text[], $6::uuid[], $7::text[], $8::text[]) AS u(client_id, channel, status, reason, message_id, pet_names, token_hash)
-         ON CONFLICT (campaign_id, client_id, channel) DO NOTHING`,
-        [c.id, rows.map((r) => r.clientId), rows.map((r) => r.channel), rows.map((r) => r.status), rows.map((r) => r.reason), rows.map((r) => r.messageId),
-         rows.map((r) => r.petNames), rows.map((r) => (r.token ? hashToken(r.token) : null))],
+        `UPDATE campaign_recipients r SET status = 'sent', message_id = u.message_id, pet_names = u.pet_names, unsubscribe_token_hash = u.token_hash, created_at = now()
+         FROM unnest($1::uuid[], $2::uuid[], $3::text[], $4::text[]) AS u(id, message_id, pet_names, token_hash) WHERE r.id = u.id`,
+        [sent.map((x) => x.id), sent.map((x) => x.messageId), sent.map((x) => x.petNames), sent.map((x) => (x.token ? hashToken(x.token) : null))],
+      );
+    }
+    if (skipped.length) {
+      await db.query(
+        `UPDATE campaign_recipients r SET status = 'skipped', skip_reason = u.reason, created_at = now()
+         FROM unnest($1::uuid[], $2::text[]) AS u(id, reason) WHERE r.id = u.id`,
+        [skipped.map((x) => x.id), skipped.map((x) => x.reason)],
       );
     }
     result.sent += messages.length;
-    result.skipped += rows.length - messages.length;
+    result.skipped += skipped.length;
     if (waiting === 0) {
       await db.query(`UPDATE campaigns SET status = 'sent', finished_at = now(), updated_at = now() WHERE id = $1`, [c.id]);
       const totals = await db.query<{ sent: number; skipped: number }>(
@@ -520,6 +567,8 @@ export interface CampaignResults {
   failed: number;
   pending: number;
   simulated: number;
+  /** In the fixed audience, not reached yet (e.g. texts waiting for quiet hours to end). */
+  waiting: number;
   skipped: Partial<Record<SkipReason, number>>;
   unsubscribed: number;
   /** Clients who booked a visit within 14 days of their message. */
@@ -541,10 +590,11 @@ export async function campaignResults(db: SqlClient, locationId: string, id: str
      ORDER BY r.status DESC, client_name, r.channel`,
     [id, locationId],
   );
-  const out: CampaignResults = { sent: 0, delivered: 0, failed: 0, pending: 0, simulated: 0, skipped: {}, unsubscribed: 0, booked: 0, recipients: [] };
+  const out: CampaignResults = { sent: 0, delivered: 0, failed: 0, pending: 0, simulated: 0, waiting: 0, skipped: {}, unsubscribed: 0, booked: 0, recipients: [] };
   const bookedClients = new Set<string>();
   for (const r of rows) {
     if (r.status === "skipped" && r.skip_reason) out.skipped[r.skip_reason] = (out.skipped[r.skip_reason] ?? 0) + 1;
+    if (r.status === "pending") out.waiting += 1;
     if (r.message_status === "sent" || r.message_status === "delivered") out.sent += 1;
     if (r.message_status === "delivered") out.delivered += 1;
     if (r.message_status === "failed") out.failed += 1;

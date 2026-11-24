@@ -110,6 +110,34 @@ describe.skipIf(!url)("campaigns on the clinic database", () => {
       expect(results.skipped.contacted_recently).toBeGreaterThan(0);
     }), 300_000);
 
+  it("fixes the audience when sending starts: later matches are not added, a pet no longer active is left out", () =>
+    withRollback(async (db, loc, today) => {
+      const id = await readyCampaign(db, loc, ["sms"]);
+      await approveCampaign(db, { locationId: loc, id, actor });
+      const now = Date.now();
+      await scheduleCampaign(db, { locationId: loc, id, sendAt: new Date(now), now, actor });
+      // Starts in quiet hours: the audience is fixed, every text waits.
+      await runDueCampaigns(db, { locationId: loc, now, today, sandbox: true, quietHours: true, values });
+      const fixed = await db.query<{ client_id: string; pet_ids: string[] }>(`SELECT client_id, pet_ids FROM campaign_recipients WHERE campaign_id = $1 AND status = 'pending'`, [id]);
+      expect(fixed.rows.length).toBeGreaterThan(0);
+
+      // After the start: a new matching client, and a fixed client's only pet dies.
+      const client = (await db.query<{ id: string }>(
+        `INSERT INTO clients (location_id, first_name, last_name, mobile, sms_consent, marketing_consent, source) VALUES ($1, 'Late', 'Joiner', '+15550108888', true, true, 'staff') RETURNING id`, [loc],
+      )).rows[0]!.id;
+      await db.query(`INSERT INTO patients (location_id, client_id, name, species, status) VALUES ($1, $2, 'Newdog', 'dog', 'active')`, [loc, client]);
+      const onePet = fixed.rows.find((r) => r.pet_ids.length === 1)!;
+      await db.query(`UPDATE patients SET status = 'deceased' WHERE id = $1`, [onePet.pet_ids[0]]);
+
+      await runDueCampaigns(db, { locationId: loc, now, today, sandbox: true, quietHours: false, values });
+      const rows = await db.query<{ client_id: string; status: string; skip_reason: string | null }>(`SELECT client_id, status, skip_reason FROM campaign_recipients WHERE campaign_id = $1`, [id]);
+      expect(rows.rows).toHaveLength(fixed.rows.length);
+      expect(rows.rows.some((r) => r.client_id === client)).toBe(false);
+      expect(rows.rows.find((r) => r.client_id === onePet.client_id)).toMatchObject({ status: "skipped", skip_reason: "pet_not_active" });
+      expect(rows.rows.every((r) => r.status !== "pending")).toBe(true);
+      expect((await getCampaign(db, loc, id)).status).toBe("sent");
+    }), 300_000);
+
   it("Send now sends only its own campaign; the scheduler sends every due one", () =>
     withRollback(async (db, loc, today) => {
       const now = Date.now();

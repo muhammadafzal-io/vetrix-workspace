@@ -184,7 +184,7 @@ export interface CampaignClient {
   lastCampaignAt: Date | null;
 }
 
-export type SkipReason = "no_marketing_consent" | "no_sms_consent" | "no_email" | "do_not_contact" | "contacted_recently";
+export type SkipReason = "no_marketing_consent" | "no_sms_consent" | "no_email" | "do_not_contact" | "contacted_recently" | "pet_not_active";
 
 export const SKIP_REASON_LABEL: Record<SkipReason, string> = {
   no_marketing_consent: "No marketing consent",
@@ -192,6 +192,7 @@ export const SKIP_REASON_LABEL: Record<SkipReason, string> = {
   no_email: "No email address",
   do_not_contact: "Marked do not contact",
   contacted_recently: `Had a campaign message in the last ${CAMPAIGN_FREQUENCY_DAYS} days`,
+  pet_not_active: "Pet no longer active",
 };
 
 /** Whether this client may get this campaign on this channel now, or why not. */

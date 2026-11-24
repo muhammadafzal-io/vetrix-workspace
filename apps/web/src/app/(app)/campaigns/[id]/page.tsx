@@ -88,6 +88,7 @@ export default async function CampaignPage({ params, searchParams }: { params: P
                 ["Delivered", results.delivered],
                 ["Failed", results.failed + (results.pending ? ` (${results.pending} retrying)` : "")],
                 ["Booked within 14 days", results.booked],
+                ...(results.waiting ? [["Waiting to send", results.waiting]] : []),
                 ["Unsubscribed", results.unsubscribed],
                 ...Object.entries(results.skipped).map(([r, n]) => [`Skipped: ${SKIP_REASON_LABEL[r as SkipReason].toLowerCase()}`, n]),
               ].map(([label, value]) => (
@@ -106,7 +107,7 @@ export default async function CampaignPage({ params, searchParams }: { params: P
                     <span className="flex items-center gap-2 text-caption">
                       <Badge variant="muted">{CHANNEL[r.channel]}</Badge>
                       <span className={cn(r.status === "skipped" || r.messageStatus === "failed" ? "text-muted-foreground" : "")}>
-                        {r.skipReason ? SKIP_REASON_LABEL[r.skipReason] : (MESSAGE_STATUS[r.messageStatus ?? ""] ?? r.messageStatus)}
+                        {r.skipReason ? SKIP_REASON_LABEL[r.skipReason] : r.status === "pending" ? "Waiting" : (MESSAGE_STATUS[r.messageStatus ?? ""] ?? r.messageStatus)}
                       </span>
                     </span>
                   </li>
