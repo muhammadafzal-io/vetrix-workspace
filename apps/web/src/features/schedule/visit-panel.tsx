@@ -1,11 +1,13 @@
 import Link from "next/link";
 import { CalendarClock, DoorOpen, PawPrint, Stethoscope, User, X } from "lucide-react";
-import type { CalendarAppointment } from "@vetrix/db/runtime";
+import { visitChangesFor } from "@vetrix/domain";
+import type { CalendarAppointment, VaccineChoice } from "@vetrix/db/runtime";
 import { Badge } from "@/components/ui/badge";
 import { buttonVariants } from "@/components/ui/button";
-import { cancelAction } from "./actions";
+import { cancelAction, completeVisitAction, visitStatusAction } from "./actions";
 import { CancelForm } from "./cancel-form";
 import { formatTime } from "./format";
+import { VisitActions } from "./visit-actions";
 
 const STATUS: Record<string, { label: string; variant: "secondary" | "success" | "warning" | "muted" | "danger" }> = {
   requested: { label: "Not confirmed yet", variant: "warning" },
@@ -14,10 +16,26 @@ const STATUS: Record<string, { label: string; variant: "secondary" | "success" |
   in_progress: { label: "In progress", variant: "secondary" },
   completed: { label: "Completed", variant: "muted" },
   no_show: { label: "No-show", variant: "danger" },
+  cancelled: { label: "Cancelled", variant: "muted" },
 };
 const BOOKED_BY: Record<string, string> = { ai: "Riley (phone)", staff: "Staff", web: "Online booking", client: "Client" };
 
-export function VisitPanel({ appt, date, timezone, canManage }: { appt: CalendarAppointment; date: string; timezone: string; canManage: boolean }) {
+export function VisitPanel({
+  appt,
+  date,
+  timezone,
+  canManage,
+  vaccines = [],
+  canRecordVaccines = false,
+}: {
+  appt: CalendarAppointment;
+  date: string;
+  timezone: string;
+  canManage: boolean;
+  /** Vaccines for this pet's species, for "Complete visit". */
+  vaccines?: VaccineChoice[];
+  canRecordVaccines?: boolean;
+}) {
   const status = STATUS[appt.status] ?? { label: appt.status, variant: "muted" as const };
   const open = appt.status === "requested" || appt.status === "confirmed";
   return (
@@ -63,6 +81,19 @@ export function VisitPanel({ appt, date, timezone, canManage }: { appt: Calendar
         </li>
       </ul>
       <p className="text-caption text-muted-foreground">Booked by {BOOKED_BY[appt.booked_by] ?? appt.booked_by}</p>
+      {canManage && visitChangesFor(appt.status).length > 0 && (
+        <div className="border-t pt-4">
+          <VisitActions
+            status={appt.status}
+            petName={appt.patient_name}
+            checkIn={visitStatusAction.bind(null, appt.id, date, "checked_in")}
+            noShow={visitStatusAction.bind(null, appt.id, date, "no_show")}
+            complete={completeVisitAction.bind(null, appt.id, date)}
+            vaccines={vaccines}
+            canRecordVaccines={canRecordVaccines}
+          />
+        </div>
+      )}
       {canManage && open && (
         <div className="grid gap-2 border-t pt-4">
           <Link href={`/schedule/book?reschedule=${appt.id}`} className={buttonVariants({ size: "sm" })}>

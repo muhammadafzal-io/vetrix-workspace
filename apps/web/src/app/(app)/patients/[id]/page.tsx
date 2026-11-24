@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { Suspense } from "react";
 import { AlertTriangle, CalendarPlus, Pencil, Syringe } from "lucide-react";
 import { ageInMonths, formatAge, formatPhone } from "@vetrix/domain";
 import { getPatient } from "@vetrix/db/runtime";
@@ -10,6 +11,7 @@ import { buttonVariants } from "@/components/ui/button";
 import { markDeceasedAction } from "@/features/clients/actions";
 import { assertId, orNotFound, requirePage } from "@/features/clients/access";
 import { DeceasedDialog } from "@/features/clients/deceased-dialog";
+import { PatientHistory, PatientHistorySkeleton } from "@/features/clients/patient-history";
 import { SPECIES_LABEL, TEMPERAMENT_LABEL } from "@/features/clients/labels";
 import { SavedNotice } from "@/features/clients/saved-notice";
 import { PetAvatar } from "@/features/clients/species-icon";
@@ -23,11 +25,12 @@ export default async function PatientPage({
   searchParams,
 }: {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{ saved?: string; deceased?: string; stopped?: string; upcoming?: string }>;
+  searchParams: Promise<{ saved?: string; deceased?: string; stopped?: string; upcoming?: string; tab?: string; filter?: string; before?: string }>;
 }) {
   const shell = await requirePage("patients.view");
   const id = assertId((await params).id);
-  const { saved, deceased: justMarked, stopped, upcoming } = await searchParams;
+  const { saved, deceased: justMarked, stopped, upcoming, tab, filter, before } = await searchParams;
+  const showHistory = tab === "history";
   const stoppedN = Number(stopped) || 0;
   const upcomingN = Number(upcoming) || 0;
   const p = await orNotFound(getPatient(shell.clinic, shell.location.id, id));
@@ -84,6 +87,45 @@ export default async function PatientPage({
         </div>
       )}
 
+      <nav aria-label="Pet sections" className="mb-5 flex gap-1 border-b">
+        {[
+          { id: "overview", label: "Overview", href: `/patients/${p.id}` },
+          { id: "history", label: "History", href: `/patients/${p.id}?tab=history` },
+        ].map((t) => {
+          const current = (t.id === "history") === showHistory;
+          return (
+            <Link
+              key={t.id}
+              href={t.href}
+              scroll={false}
+              aria-current={current ? "page" : undefined}
+              className={cn(
+                "-mb-px border-b-2 px-4 py-2.5 text-small font-medium transition-colors",
+                current ? "border-primary text-primary" : "border-transparent text-muted-foreground hover:text-foreground",
+              )}
+            >
+              {t.label}
+            </Link>
+          );
+        })}
+      </nav>
+
+      {showHistory ? (
+        <Suspense key={`${filter ?? ""}-${before ?? ""}`} fallback={<PatientHistorySkeleton />}>
+          <PatientHistory
+            clinic={shell.clinic}
+            locationId={shell.location.id}
+            timezone={shell.location.timezone}
+            patientId={p.id}
+            petName={p.name}
+            today={today}
+            permissions={shell.permissions}
+            filter={filter ?? "all"}
+            before={before ?? null}
+            canBook={canBook && !deceased}
+          />
+        </Suspense>
+      ) : (
       <div className="grid gap-5 lg:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)]">
         <div className="grid content-start gap-5">
           <Panel title="Details">
@@ -182,6 +224,7 @@ export default async function PatientPage({
           )}
         </div>
       </div>
+      )}
     </>
   );
 }

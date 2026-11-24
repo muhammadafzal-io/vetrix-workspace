@@ -232,6 +232,12 @@ export async function seedSampleClinic(client: SqlClient, pack: Pack, options: S
       ],
     );
     patientIds.set(p.id!, id);
+    if (nullIfEmpty(p.weight_kg)) {
+      await one(
+        `INSERT INTO patient_weights (patient_id, weight_kg, measured_on, source) VALUES ($1, $2, $3::timestamptz::date, 'import') RETURNING id`,
+        [id, p.weight_kg, p.created_at],
+      );
+    }
     patientRows.set(p.id!, p);
     for (const flag of (p.temperament_flags ?? "").split(";").filter(Boolean)) {
       await q(`INSERT INTO patient_temperament_flags VALUES ($1, $2)`, [id, flag]);

@@ -17,15 +17,18 @@ import {
 import {
   bookAppointment,
   cancelAppointment,
+  completeVisit,
+  getAppointment,
   loadPatientForBooking,
   loadSchedulingData,
   loadService,
   rescheduleAppointment,
   searchPatients,
+  setVisitStatus,
   withTransaction,
   type Actor,
 } from "@vetrix/db/runtime";
-import { toActionError, type ActionResult } from "@/lib/action-result";
+import { formValues, toActionError, type ActionResult } from "@/lib/action-result";
 import { clinicToday } from "@/lib/clinic-date";
 import { requireShell } from "@/lib/session";
 import { offerFreedTime } from "@/features/waitlist/offer";
@@ -174,6 +177,61 @@ export async function bookAction(_: ActionResult | null, f: FormData): Promise<A
   revalidatePath("/schedule");
   revalidatePath("/overview");
   redirect(`/schedule?date=${date}&visit=${id}&${moved ? "moved" : "booked"}=1`);
+}
+
+/** Check-in or no-show from the visit panel. A no-show starts the no-show follow-up on the next reminder run. */
+export async function visitStatusAction(
+  appointmentId: string,
+  date: string,
+  // Bound per button; the form's state and fields are not needed.
+  to: "checked_in" | "no_show",
+): Promise<ActionResult> {
+  let patientId: string;
+  try {
+    const { shell, actor } = await allowed("schedule.manage");
+    if (to !== "checked_in" && to !== "no_show") throw new ValidationError("Choose a status.");
+    const id = uuid(appointmentId, "visit");
+    patientId = await withTransaction(shell.clinic, async (tx) => {
+      await setVisitStatus(tx, { locationId: shell.location.id, appointmentId: id, to, actor, now: new Date() });
+      return (await getAppointment(tx, shell.location.id, id)).patient_id;
+    });
+  } catch (error) {
+    return toActionError(error);
+  }
+  revalidatePath("/schedule");
+  revalidatePath("/overview");
+  revalidatePath(`/patients/${patientId}`);
+  redirect(`/schedule?date=${ISO_DATE.test(date) ? date : ""}&visit=${appointmentId}&updated=${to}`);
+}
+
+/**
+ * Completes a visit and records what staff entered. Vaccines are recorded
+ * only for people who may edit pets (patients.manage); for anyone else they
+ * are ignored, never trusted from the form.
+ */
+export async function completeVisitAction(appointmentId: string, date: string, _: ActionResult | null, f: FormData): Promise<ActionResult> {
+  let patientId: string;
+  try {
+    const { shell, actor } = await allowed("schedule.manage");
+    const id = uuid(appointmentId, "visit");
+    patientId = await withTransaction(shell.clinic, async (tx) => {
+      await completeVisit(tx, {
+        locationId: shell.location.id,
+        appointmentId: id,
+        actor,
+        now: new Date(),
+        canRecordVaccines: shell.permissions.has("patients.manage"),
+        outcome: { weightKg: String(f.get("weightKg") ?? ""), vaccineIds: f.getAll("vaccineIds").map(String) },
+      });
+      return (await getAppointment(tx, shell.location.id, id)).patient_id;
+    });
+  } catch (error) {
+    return { ...toActionError(error), ...(error instanceof ValidationError ? { values: formValues(f) } : {}) } as ActionResult;
+  }
+  revalidatePath("/schedule");
+  revalidatePath("/overview");
+  revalidatePath(`/patients/${patientId}`);
+  redirect(`/schedule?date=${ISO_DATE.test(date) ? date : ""}&visit=${appointmentId}&updated=completed`);
 }
 
 export async function cancelAction(appointmentId: string, date: string, _: ActionResult | null, f: FormData): Promise<ActionResult> {

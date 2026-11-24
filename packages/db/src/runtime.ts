@@ -23,3 +23,4 @@ export * from "./waitlist";
 export * from "./settings";
 export * from "./booking-links";
 export * from "./widget";
+export * from "./patient-history";

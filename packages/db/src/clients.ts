@@ -407,6 +407,7 @@ export async function createPatient(
     )
   ).rows[0]!.id;
   await db.query(`INSERT INTO patient_contacts (patient_id, client_id, receives_reminders) VALUES ($1, $2, true)`, [id, input.clientId]);
+  if (p.weightKg != null) await recordStaffWeight(db, input.locationId, id, p.weightKg, input.actor);
   await setTemperament(db, id, p.temperamentFlags);
   await writeAudit(db, { locationId: input.locationId, actor: input.actor, action: "patient.created", entityType: "patient", entityId: id, changes: { ...p } });
   return id;
@@ -436,7 +437,18 @@ export async function updatePatient(
      p.weightKg, p.colorMarkings, p.microchipNumber, p.medicalAlerts],
   );
   await setTemperament(db, input.patientId, p.temperamentFlags);
+  // A new weight joins the weight history (History tab); clearing it does not.
+  if ("weightKg" in changes && p.weightKg != null) await recordStaffWeight(db, input.locationId, input.patientId, p.weightKg, input.actor);
   await writeAudit(db, { locationId: input.locationId, actor: input.actor, action: "patient.updated", entityType: "patient", entityId: input.patientId, changes });
+}
+
+/** A weight typed by staff on the pet form, dated today in the clinic's time zone. */
+async function recordStaffWeight(db: SqlClient, locationId: string, patientId: string, kg: number, actor: Actor) {
+  await db.query(
+    `INSERT INTO patient_weights (patient_id, weight_kg, measured_on, source, recorded_by)
+     SELECT $1, $3, (now() AT TIME ZONE l.timezone)::date, 'staff', $4 FROM locations l WHERE l.id = $2`,
+    [patientId, locationId, kg, actor.type === "staff" ? actor.id : null],
+  );
 }
 
 export interface DeceasedResult {

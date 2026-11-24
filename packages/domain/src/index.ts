@@ -23,3 +23,4 @@ export * from "./widget";
 export * from "./conversation-ai";
 export * from "./trace";
 export * from "./clinic-setup";
+export * from "./patient-history";

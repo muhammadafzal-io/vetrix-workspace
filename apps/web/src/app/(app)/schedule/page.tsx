@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { CalendarDays, CheckCircle2, ChevronLeft, ChevronRight, Plus } from "lucide-react";
 import { localParts, weekdayOf } from "@vetrix/domain";
-import { listAppointmentsForDay, loadSchedulingData } from "@vetrix/db/runtime";
+import { listAppointmentsForDay, loadSchedulingData, vaccineChoicesFor } from "@vetrix/db/runtime";
 import { getVeterinaryPack } from "@vetrix/pack";
 import { EmptyState } from "@/components/patterns/empty-state";
 import { PageHeader } from "@/components/patterns/page-header";
@@ -20,7 +20,7 @@ export const metadata: Metadata = { title: "Schedule · Vetrix" };
 export default async function SchedulePage({
   searchParams,
 }: {
-  searchParams: Promise<{ date?: string; visit?: string; booked?: string; moved?: string; cancelled?: string }>;
+  searchParams: Promise<{ date?: string; visit?: string; booked?: string; moved?: string; cancelled?: string; updated?: string }>;
 }) {
   const shell = await requirePage("schedule.view");
   const sp = await searchParams;
@@ -48,6 +48,13 @@ export default async function SchedulePage({
   const close = Math.max(hours?.close ?? 18 * 60, ...visitMinutes.map((v) => v.e));
   const selected = appointments.find((a) => a.id === sp.visit);
   const canManage = shell.permissions.has("schedule.manage");
+  const canRecordVaccines = canManage && shell.permissions.has("patients.manage");
+  const vaccines = selected && canRecordVaccines ? await vaccineChoicesFor(shell.clinic, selected.species) : [];
+  const UPDATED: Record<string, string> = {
+    checked_in: "is checked in.",
+    no_show: "is marked as a no-show. The no-show follow-up starts with the next reminder run.",
+    completed: "'s visit is completed. Anything you recorded is now in the pet's history.",
+  };
   const lanes = getVeterinaryPack().brand.room_lane_colors as Record<string, string>;
   const navBtn = cn(buttonVariants({ variant: "outline", size: "sm" }), "border-white/30 bg-white/10 text-white hover:bg-white/20");
 
@@ -93,6 +100,19 @@ export default async function SchedulePage({
           </p>
         </Alert>
       )}
+      {sp.updated && UPDATED[sp.updated] && selected && (
+        <Alert variant="success" className="mb-4">
+          <CheckCircle2 aria-hidden />
+          <p>
+            {selected.patient_name}
+            {sp.updated === "completed" ? "" : " "}
+            {UPDATED[sp.updated]}{" "}
+            <Link href={`/patients/${selected.patient_id}?tab=history`} className="font-medium underline">
+              Open history
+            </Link>
+          </p>
+        </Alert>
+      )}
       {sp.cancelled === "1" && (
         <Alert variant="success" className="mb-4">
           <CheckCircle2 aria-hidden />
@@ -113,7 +133,7 @@ export default async function SchedulePage({
             </>
           )}
         </div>
-        {selected && <VisitPanel appt={selected} date={date} timezone={tz} canManage={canManage} />}
+        {selected && <VisitPanel appt={selected} date={date} timezone={tz} canManage={canManage} vaccines={vaccines} canRecordVaccines={canRecordVaccines} />}
       </div>
     </>
   );

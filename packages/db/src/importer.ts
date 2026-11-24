@@ -173,6 +173,14 @@ export async function runImport(
       ],
     ),
   );
+  // Imported weights start each pet's weight history.
+  await inBatches(newPatients, (batch) =>
+    db.query(
+      `INSERT INTO patient_weights (patient_id, weight_kg, measured_on, source)
+       SELECT u.id, u.w, CURRENT_DATE, 'import' FROM unnest($1::uuid[], $2::numeric[]) AS u(id, w) WHERE u.w IS NOT NULL`,
+      [batch.map((p) => patientIds.get(p.sourceId)), batch.map((p) => p.patient.weightKg)],
+    ),
+  );
   await inBatches(newPatients, (batch) =>
     db.query(`INSERT INTO patient_contacts (patient_id, client_id, receives_reminders) SELECT u.p, u.c, true FROM unnest($1::uuid[], $2::uuid[]) AS u(p, c)`, [
       batch.map((p) => patientIds.get(p.sourceId)),
