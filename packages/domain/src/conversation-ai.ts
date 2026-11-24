@@ -204,3 +204,62 @@ export function acceptRewrite(req: RewriteRequest, rewritten: string | null): st
   if (draft.trim().endsWith("?") && !r.endsWith("?")) return null;
   return r;
 }
+
+// ---------- Tappable answers in the website chat ----------
+
+export interface ChatChoice {
+  /** What the button says. */
+  label: string;
+  /** What is sent when tapped (words the engine already understands). */
+  value: string;
+}
+
+const COMMON_REASONS: ChatChoice[] = [
+  { label: "Annual checkup", value: "annual checkup" },
+  { label: "Vaccines", value: "vaccines" },
+  { label: "Not feeling well", value: "sick visit" },
+  { label: "Nail trim", value: "nail trim" },
+];
+
+const sentence = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+
+/**
+ * Buttons for what the front desk is waiting for, so a website visitor can
+ * tap instead of type: the times offered, yes/no, which pet, the reason, or
+ * a fixed answer such as the species. Never while it checks who the caller
+ * is (pet names would give the answer away) and never during an emergency.
+ * Tapping sends words the engine already reads, so nothing else changes.
+ */
+export function chatChoices(s: ConversationState, ctx: FrontDeskContext): ChatChoice[] {
+  if (s.triage.level === "emergency") return [];
+  const label = (start: number) => sentence(slotLabel(start, ctx.timezone, ctx.now));
+  switch (s.phase) {
+    case "offering": {
+      const starts = s.offeredGroups.length ? s.offeredGroups.map((g) => g[0]!.start) : s.offered.map((o) => o.start);
+      return [
+        ...starts.slice(0, 2).map((start, i) => ({ label: label(start), value: i === 0 ? "the first one" : "the second one" })),
+        { label: "Other times", value: "none of those" },
+      ];
+    }
+    case "confirm_new_pet":
+    case "confirm_deceased":
+    case "rebook":
+      return [
+        { label: "Yes", value: "yes" },
+        { label: "No", value: "no" },
+      ];
+    case "ask_pet": {
+      const pets = s.pets.filter((p) => p.status === "active").map((p) => p.name);
+      return [...pets.map((p) => ({ label: p, value: p })), { label: "A new pet", value: "a new pet" }];
+    }
+    case "ask_service":
+    case "unclear_service":
+      return COMMON_REASONS;
+    case "question": {
+      const forms = QUESTION_CHOICES[s.question ?? ""];
+      return forms ? forms.filter((f) => f !== UNCLEAR).map((f) => ({ label: sentence(f), value: f })) : [];
+    }
+    default:
+      return []; // open questions and identity checks are typed
+  }
+}

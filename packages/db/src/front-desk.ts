@@ -5,7 +5,9 @@
 // not at all.
 import {
   ageInMonths,
+  chatChoices,
   checkEligibility,
+  formatPhone,
   classifyByPhrases,
   ConflictError,
   dateRange,
@@ -39,6 +41,7 @@ import {
   trace,
   traced,
 } from "@vetrix/domain";
+import type { ChatChoice } from "@vetrix/domain";
 import { getVeterinaryPack } from "@vetrix/pack";
 import { bookAppointment, cancelAppointment, loadPatientForBooking, loadSchedulingData, loadService, rescheduleAppointment } from "./booking";
 import { createClient, createPatient, markPatientDeceased, withTransaction, type Actor, type TransactionPool } from "./clients";
@@ -118,7 +121,8 @@ async function loadSetup(db: SqlClient, locationId: string, now: number): Promis
     serviceIds: new Map(services.rows.map((s) => [s.pack_service_id, s.id])),
     ctx: {
       clinicName: l.name,
-      clinicPhone: l.main_phone,
+      // Said and shown to callers: "(555) 010-1000", not "+15550101000".
+      clinicPhone: l.main_phone ? formatPhone(l.main_phone) : null,
       aiName: l.ai_persona_name ?? getVeterinaryPack().brand.ai_persona?.default_name ?? "Riley",
       timezone: l.timezone,
       now,
@@ -547,6 +551,19 @@ export interface TurnOutput {
   outbound: OutboundText[];
   /** Live calls: dial this number after speaking the replies. */
   transferTo: string | null;
+  /** Website chat: buttons for what the front desk is waiting for (domain chatChoices). */
+  choices: ChatChoice[];
+  /** Visits booked in this turn, for the "Booked" card. */
+  bookedNow: BookedVisit[];
+}
+
+export interface BookedVisit {
+  appointmentId: string;
+  petName: string;
+  /** e.g. "a wellness exam" */
+  what: string;
+  start: number;
+  providerName: string | null;
 }
 
 async function addTurns(db: SqlClient, callId: string, turns: { speaker: "caller" | "ai" | "system"; body: string }[]) {
@@ -575,7 +592,7 @@ export async function startFrontDesk(pool: TransactionPool, input: StartInput, n
     );
     const callId = rows[0]!.id;
     await addTurns(db, callId, replies.map((body) => ({ speaker: "ai" as const, body })));
-    return { callId, replies, notes: [], ended: false, triageLevel: "routine", outbound: [], transferTo: null };
+    return { callId, replies, notes: [], ended: false, triageLevel: "routine", outbound: [], transferTo: null, choices: [], bookedNow: [] };
   });
 }
 
@@ -642,8 +659,29 @@ async function runTurn(
       [input.callId, input.locationId, JSON.stringify(state), state.triage.level, state.caller.clientId, state.petId,
        state.transferOutcome, state.outcomes.join(",") || null, summarizeConversation(state), ended, new Date(now)],
     );
+    // Visits booked in this turn, with the doctor, for the website's "Booked" card.
+    const before = new Set(call.state.booked.map((b) => b.appointmentId));
+    const fresh = state.booked.filter((b) => !before.has(b.appointmentId));
+    const doctors = fresh.length
+      ? new Map(
+          (await db.query<{ id: string; name: string | null }>(
+            `SELECT a.id, p.display_name AS name FROM appointments a LEFT JOIN providers p ON p.id = a.provider_id WHERE a.id = ANY($1::uuid[])`,
+            [fresh.map((b) => b.appointmentId)],
+          )).rows.map((r) => [r.id, r.name]),
+        )
+      : new Map<string, string | null>();
     trace("db", HERE, "⑥ transcript lines (call_turns) and new state (calls.state) saved → COMMIT");
-    return { callId: input.callId, replies, notes: out.notes, ended, triageLevel: state.triage.level, outbound: out.outbound, transferTo: out.transferTo };
+    return {
+      callId: input.callId,
+      replies,
+      notes: out.notes,
+      ended,
+      triageLevel: state.triage.level,
+      outbound: out.outbound,
+      transferTo: out.transferTo,
+      choices: ended ? [] : chatChoices(state, ctx),
+      bookedNow: fresh.map((b) => ({ appointmentId: b.appointmentId, petName: b.petName, what: b.phrase, start: b.start, providerName: doctors.get(b.appointmentId) ?? null })),
+    };
   });
 }
 

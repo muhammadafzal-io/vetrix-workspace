@@ -27,8 +27,9 @@ import {
   type WidgetService,
   type SqlClient,
   type WidgetSession,
+  type BookedVisit,
 } from "@vetrix/db/runtime";
-import { codeText, formatPhone, isWidgetCode, normalizePhone, trace, traced, type AgeBand, type NewClientForm } from "@vetrix/domain";
+import { codeText, formatPhone, isWidgetCode, normalizePhone, trace, traced, type AgeBand, type ChatChoice, type NewClientForm, type TriageLevel } from "@vetrix/domain";
 import { conversationAI, triageClassifier } from "@/lib/ai";
 import { claimBase } from "@/lib/claim";
 import { getEnv, getMessagingMode } from "@/lib/env";
@@ -310,7 +311,13 @@ export async function bookAction(org: string, locationId: string, token: string,
 
 // ---------- Chat with the AI front desk ----------
 
-export type ChatResult = { ok: true; callId: string; replies: string[]; ended: boolean } | Fail;
+/**
+ * One turn of the website chat. `triageLevel` drives the emergency card;
+ * `choices` are tappable answers; `bookedNow` the visits just booked.
+ */
+export type ChatResult =
+  | { ok: true; callId: string; replies: string[]; ended: boolean; triageLevel: TriageLevel; choices: ChatChoice[]; bookedNow: BookedVisit[] }
+  | Fail;
 
 async function deliverTexts(org: string, organizationId: string, locationId: string, outbound: OutboundText[]) {
   if (sandbox(org) || outbound.length === 0) return;
@@ -350,7 +357,7 @@ export async function chatStartAction(org: string, locationId: string, token: st
       () => startFrontDesk(s.pool, { locationId, channel: "web", callerNumber: s.session.mobile, sandbox: sandbox(org) }),
       (t) => `conversation ${t.callId.slice(0, 8)}… started, ${t.replies.length} greeting line(s)`,
     );
-    return { ok: true, callId: r.callId, replies: r.replies, ended: r.ended };
+    return { ok: true, callId: r.callId, replies: r.replies, ended: r.ended, triageLevel: r.triageLevel, choices: r.choices, bookedNow: r.bookedNow };
   } catch (error) {
     logger.error("widget chat start failed", { error });
     return OOPS;
@@ -381,7 +388,7 @@ export async function chatSendAction(org: string, locationId: string, token: str
     );
     await deliverTexts(org, s.organizationId, locationId, r.outbound);
     trace("action", HERE, `⑦ ${r.outbound.length} text(s) to send (sandbox sends none) → return the replies to the browser, React shows them`);
-    return { ok: true, callId, replies: r.replies, ended: r.ended };
+    return { ok: true, callId, replies: r.replies, ended: r.ended, triageLevel: r.triageLevel, choices: r.choices, bookedNow: r.bookedNow };
   } catch (error) {
     const message = userMessage(error);
     if (!message) logger.error("widget chat failed", { error });

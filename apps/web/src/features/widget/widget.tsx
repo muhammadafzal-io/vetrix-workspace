@@ -59,7 +59,8 @@ import {
   type PetForm,
   type TimesResult,
 } from "./actions";
-import type { WidgetMe, WidgetPet, WidgetService } from "@vetrix/db/runtime";
+import type { BookedVisit, WidgetMe, WidgetPet, WidgetService } from "@vetrix/db/runtime";
+import type { ChatChoice } from "@vetrix/domain";
 
 export interface WidgetClinicProps {
   org: string;
@@ -307,11 +308,7 @@ export function BookingWidget({ clinic, embed }: { clinic: WidgetClinicProps; em
         </main>
       </div>
 
-      {!isHome && step.name !== "chat" && (
-        <footer className="border-t bg-card px-4 py-2.5">
-          <Emergency clinic={clinic} />
-        </footer>
-      )}
+
     </div>
   );
 }
@@ -326,26 +323,45 @@ function IconButton({ label, onClick, children, className }: { label: string; on
   );
 }
 
-/** Always visible, but quiet: one line with a call link (the ER's when closed). */
-function Emergency({ clinic }: { clinic: WidgetClinicProps }) {
+/** Where to call in an emergency: the clinic, or the emergency clinic when closed. */
+function emergencyTarget(clinic: WidgetClinicProps) {
   const er = !clinic.open ? clinic.er : null;
-  const target = er ? er.phone : clinic.phone;
+  return { er, call: er ? er.phone : clinic.phone, name: er ? er.name : clinic.name };
+}
+
+/** The quiet link on the home screen. */
+function EmergencyLink({ clinic }: { clinic: WidgetClinicProps }) {
+  const { call } = emergencyTarget(clinic);
+  if (!call) return null;
   return (
-    <p className="flex items-start justify-center gap-1.5 text-center text-caption text-muted-foreground">
-      <AlertTriangle className="mt-px size-3.5 shrink-0 text-destructive" aria-hidden />
-      <span>
-        <span className="font-medium text-foreground">Emergency?</span>{" "}
-        {er ? <>We&apos;re closed. Go to {er.name}, {er.address}, or </> : "Don't book online. "}
-        {target ? (
-          <a className="font-semibold text-destructive underline-offset-2 hover:underline" href={target.href}>
-            call {target.text}
-          </a>
-        ) : (
-          "call your nearest emergency vet"
-        )}
-        .
-      </span>
-    </p>
+    <a href={call.href} className="whitespace-nowrap font-semibold text-destructive underline-offset-2 hover:underline">
+      Emergency? Call {call.text}
+    </a>
+  );
+}
+
+/**
+ * Shown in the chat as soon as the AI's triage says emergency (it never goes
+ * back down): call the clinic now, or the emergency clinic after hours.
+ */
+function EmergencyCard({ clinic }: { clinic: WidgetClinicProps }) {
+  const { er, call, name } = emergencyTarget(clinic);
+  return (
+    <div role="alert" className="cw-in sticky top-[4.5rem] z-10 grid gap-3 rounded-2xl border-2 border-destructive bg-danger-soft p-4 shadow-card">
+      <p className="flex items-center gap-2 font-semibold text-destructive">
+        <AlertTriangle className="size-5 shrink-0" aria-hidden /> This could be an emergency
+      </p>
+      <p className="text-small text-foreground">
+        {er ? `We're closed right now. Please call ${er.name} now${er.address ? `, or go to ${er.address}` : ""}.` : "Please call us now so a vet can help right away. Don't wait for an online booking."}
+      </p>
+      {call ? (
+        <a href={call.href} className="flex h-12 items-center justify-center gap-2 rounded-xl bg-destructive text-body font-semibold text-white shadow-sm hover:bg-destructive/90">
+          <Phone className="size-5" aria-hidden /> Call {name} · {call.text}
+        </a>
+      ) : (
+        <p className="font-semibold text-destructive">Go to your nearest emergency vet now.</p>
+      )}
+    </div>
   );
 }
 
@@ -516,7 +532,6 @@ function AssistantHome({
       </div>
 
       <div className="sticky bottom-0 grid gap-2 border-t bg-card px-3 pb-3 pt-2.5">
-        <Emergency clinic={clinic} />
         <Composer
           value={draft}
           onChange={setDraft}
@@ -524,7 +539,9 @@ function AssistantHome({
           placeholder={`Message ${clinic.aiName}…`}
           mic={canTalk ? { listening: false, onClick: onTalk } : null}
         />
-        <p className="text-center text-[11px] text-muted-foreground">We confirm your mobile number with a code first. {clinic.aiName} is an AI; staff see every conversation.</p>
+        <p className="text-center text-[11px] text-muted-foreground">
+          We confirm your mobile number with a code first. {clinic.aiName} is an AI; staff see every conversation. <EmergencyLink clinic={clinic} />
+        </p>
       </div>
     </div>
   );
@@ -1244,36 +1261,47 @@ function TimeStep({
   );
 }
 
+/** Saves a visit as a calendar file (.ics) the phone or computer opens in its calendar. */
+function downloadIcs(v: { start: number; minutes: number; title: string; location: string | null; description: string; file: string }) {
+  const stamp = (t: number) => new Date(t).toISOString().replace(/[-:]/g, "").replace(/\.\d{3}/, "");
+  const esc = (s: string) => s.replace(/[\\;,]/g, (m) => `\\${m}`).replace(/\n/g, "\\n");
+  const body = [
+    "BEGIN:VCALENDAR",
+    "VERSION:2.0",
+    "PRODID:-//clinic//booking//EN",
+    "BEGIN:VEVENT",
+    `UID:${v.start}-${v.file.replace(/\W/g, "")}@booking`,
+    `DTSTAMP:${stamp(Date.now())}`,
+    `DTSTART:${stamp(v.start)}`,
+    `DTEND:${stamp(v.start + Math.max(15, v.minutes) * 60_000)}`,
+    `SUMMARY:${esc(v.title)}`,
+    v.location ? `LOCATION:${esc(v.location)}` : "",
+    `DESCRIPTION:${esc(v.description)}`,
+    "END:VEVENT",
+    "END:VCALENDAR",
+  ]
+    .filter(Boolean)
+    .join("\r\n");
+  const url = URL.createObjectURL(new Blob([body], { type: "text/calendar" }));
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = v.file;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 function Done({ clinic, service, booked, onAnother }: { clinic: WidgetClinicProps; service: WidgetService; booked: Booked; onAnother: () => void }) {
   const longDate = fmt(clinic.timezone, { weekday: "long", month: "long", day: "numeric" });
   const time = fmt(clinic.timezone, { hour: "numeric", minute: "2-digit" });
-  const ics = () => {
-    const stamp = (t: number) => new Date(t).toISOString().replace(/[-:]/g, "").replace(/\.\d{3}/, "");
-    const esc = (s: string) => s.replace(/[\\;,]/g, (m) => `\\${m}`).replace(/\n/g, "\\n");
-    const body = [
-      "BEGIN:VCALENDAR",
-      "VERSION:2.0",
-      "PRODID:-//clinic//booking//EN",
-      "BEGIN:VEVENT",
-      `UID:${booked.start}-${booked.petName.replace(/\W/g, "")}@booking`,
-      `DTSTAMP:${stamp(Date.now())}`,
-      `DTSTART:${stamp(booked.start)}`,
-      `DTEND:${stamp(booked.start + Math.max(15, service.durationMin) * 60_000)}`,
-      `SUMMARY:${esc(`${booked.petName}: ${booked.serviceName} at ${clinic.name}`)}`,
-      clinic.address ? `LOCATION:${esc(clinic.address)}` : "",
-      `DESCRIPTION:${esc(`With ${booked.providerName}.${clinic.phone ? ` Questions? Call ${clinic.phone.text}.` : ""}`)}`,
-      "END:VEVENT",
-      "END:VCALENDAR",
-    ]
-      .filter(Boolean)
-      .join("\r\n");
-    const url = URL.createObjectURL(new Blob([body], { type: "text/calendar" }));
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `${booked.petName}-appointment.ics`;
-    a.click();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
-  };
+  const ics = () =>
+    downloadIcs({
+      start: booked.start,
+      minutes: service.durationMin,
+      title: `${booked.petName}: ${booked.serviceName} at ${clinic.name}`,
+      location: clinic.address,
+      description: `With ${booked.providerName}.${clinic.phone ? ` Questions? Call ${clinic.phone.text}.` : ""}`,
+      file: `${booked.petName}-appointment.ics`,
+    });
   const rows: { icon: LucideIcon; text: string }[] = [
     { icon: CalendarCheck2, text: longDate(booked.start) },
     { icon: Clock, text: `${time(booked.start)} · ${service.durationMin} min` },
@@ -1324,6 +1352,57 @@ function Done({ clinic, service, booked, onAnother }: { clinic: WidgetClinicProp
   );
 }
 
+type ChatLine = { id: number; who: "ai" | "me"; text: string } | { id: number; who: "booked"; visit: BookedVisit };
+
+/** The confirmation card in the chat when Riley books a visit. */
+function BookedCard({ visit, clinic }: { visit: BookedVisit; clinic: WidgetClinicProps }) {
+  const day = fmt(clinic.timezone, { weekday: "long", month: "long", day: "numeric" })(visit.start);
+  const time = fmt(clinic.timezone, { hour: "numeric", minute: "2-digit" })(visit.start);
+  const what = visit.what.replace(/^(a|an|the) /i, "");
+  return (
+    <div className="cw-in ml-10 grid gap-3 overflow-hidden rounded-2xl border border-emerald-500/40 bg-card shadow-card">
+      <div className="flex items-center gap-2 bg-emerald-500 px-4 py-2 text-small font-semibold text-white">
+        <Check className="size-4" aria-hidden /> Booked
+      </div>
+      <div className="grid gap-1.5 px-4 text-small">
+        <p className="text-body font-semibold">
+          {visit.petName} · {what.charAt(0).toUpperCase() + what.slice(1)}
+        </p>
+        <p className="flex items-center gap-2">
+          <CalendarCheck2 className="size-4 text-primary" aria-hidden /> {day}
+        </p>
+        <p className="flex items-center gap-2">
+          <Clock className="size-4 text-primary" aria-hidden /> {time}
+          {visit.providerName ? ` · ${visit.providerName}` : ""}
+        </p>
+        {clinic.address && (
+          <p className="flex items-center gap-2 text-muted-foreground">
+            <MapPin className="size-4" aria-hidden /> {clinic.address}
+          </p>
+        )}
+      </div>
+      <div className="px-4 pb-4">
+        <Button
+          variant="outline"
+          className="h-10 w-full rounded-xl"
+          onClick={() =>
+            downloadIcs({
+              start: visit.start,
+              minutes: 30,
+              title: `${visit.petName}: ${what} at ${clinic.name}`,
+              location: clinic.address,
+              description: visit.providerName ? `With ${visit.providerName}.` : `At ${clinic.name}.`,
+              file: `${visit.petName}-appointment.ics`,
+            })
+          }
+        >
+          <CalendarPlus aria-hidden /> Add to calendar
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 const STARTERS = ["My pet seems sick", "Book a checkup", "Question about my pet's meds"];
 
 /**
@@ -1358,7 +1437,10 @@ function Chat({
   onClose?: () => void;
 }) {
   const [callId, setCallId] = useState<string | null>(null);
-  const [lines, setLines] = useState<{ id: number; who: "ai" | "me"; text: string }[]>([]);
+  const [lines, setLines] = useState<ChatLine[]>([]);
+  // Tappable answers for what Riley is waiting for, and the emergency card (it never goes away once shown).
+  const [choices, setChoices] = useState<ChatChoice[]>([]);
+  const [emergency, setEmergency] = useState(false);
   const [text, setText] = useState("");
   const [ended, setEnded] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -1367,7 +1449,8 @@ function Chat({
   const idRef = useRef<string | null>(null);
   const lineId = useRef(0);
   const sentFirst = useRef(false);
-  const nextLine = (who: "ai" | "me", t: string) => ({ id: ++lineId.current, who, text: t });
+  const nextLine = (who: "ai" | "me", t: string): ChatLine => ({ id: ++lineId.current, who, text: t });
+  const bookedLine = (visit: BookedVisit): ChatLine => ({ id: ++lineId.current, who: "booked", visit });
   const canTalk = useCanTalk();
   const [talking, setTalking] = useState(startTalking);
   // The call screen (spoken conversations) or the chat; a call can move between them.
@@ -1384,7 +1467,9 @@ function Chat({
       if (r.reason === "session" && r.error.startsWith("For your security")) return onExpired();
       return setError(r.error);
     }
-    setLines((l) => [...l, ...r.replies.map((t) => nextLine("ai", t))]);
+    setLines((l) => [...l, ...r.replies.map((t) => nextLine("ai", t)), ...r.bookedNow.map(bookedLine)]);
+    setChoices(r.choices);
+    if (r.triageLevel === "emergency") setEmergency(true);
     if (r.ended) {
       setEnded(true);
       idRef.current = null;
@@ -1403,6 +1488,8 @@ function Chat({
       }
       idRef.current = r.callId;
       setCallId(r.callId);
+      setEmergency(false);
+      setChoices(r.choices);
       setLines(r.replies.map((t) => nextLine("ai", t)));
       // The message typed on the home screen goes first.
       if (first && !sentFirst.current) {
@@ -1435,12 +1522,14 @@ function Chat({
     end.current?.scrollIntoView({ block: "end", behavior: "smooth" });
   }, [lines.length, pending]);
 
-  const say = (body: string) => {
+  /** Sends a message; a tapped button shows its label but sends its value. */
+  const say = (body: string, shown?: string) => {
     const id = idRef.current;
     if (!body || !id) return;
     setText("");
     setError(null);
-    setLines((l) => [...l, nextLine("me", body)]);
+    setChoices([]);
+    setLines((l) => [...l, nextLine("me", shown ?? body)]);
     start(async () => {
       await send(id, body);
     });
@@ -1458,7 +1547,7 @@ function Chat({
     // On the call screen the voice starts once the call has connected.
     active: talking && Boolean(callId) && (view === "chat" || connectedAt !== null),
     autoListen: !muted,
-    replies: useMemo(() => lines.filter((l) => l.who === "ai").map((l) => ({ id: l.id, text: l.text })), [lines]),
+    replies: useMemo(() => lines.flatMap((l) => (l.who === "ai" ? [{ id: l.id, text: l.text }] : [])), [lines]),
     busy: pending,
     ended,
     onHeard: (heard) => sayRef.current(heard),
@@ -1502,13 +1591,14 @@ function Chat({
   };
 
   if (view === "call") {
-    const last = lines.at(-1);
+    const last = [...lines].reverse().find((l): l is Extract<ChatLine, { text: string }> => l.who !== "booked");
     const caption =
       spoken.state === "listening" && spoken.interim
         ? { who: "me" as const, text: spoken.interim }
         : last
           ? { who: last.who, text: last.text }
           : null;
+    const er = emergencyTarget(clinic);
     return (
       <CallView
         aiName={aiName}
@@ -1523,6 +1613,7 @@ function Chat({
         onShowChat={() => setView("chat")}
         onEnd={hangUp}
         onCallAgain={callAgain}
+        emergency={emergency ? { name: er.name, call: er.call, detail: er.er ? `We're closed. Call ${er.er.name} now.` : "Please call the clinic now so a vet can help right away." } : null}
       />
     );
   }
@@ -1538,7 +1629,7 @@ function Chat({
 
   return (
     <div className="flex flex-1 flex-col">
-      <div className="flex items-center gap-2.5 border-b bg-card py-2 pl-2 pr-3">
+      <div className="sticky top-0 z-20 flex h-[3.75rem] items-center gap-2.5 border-b bg-card py-2 pl-2 pr-3">
         {onBack ? (
           <IconButton label="Back" onClick={onBack}>
             <ArrowLeft className="size-5" aria-hidden />
@@ -1570,13 +1661,13 @@ function Chat({
         )}
       </div>
       {onCall && <OnCallBar aiName={aiName} seconds={seconds} onReturn={() => setView("call")} />}
-      <div className="border-b bg-danger-soft/50 px-4 py-1.5">
-        <Emergency clinic={clinic} />
-      </div>
 
       <div className="grid flex-1 content-start gap-2 p-4" aria-live="polite">
+        {emergency && <EmergencyCard clinic={clinic} />}
         {lines.map((l, i) =>
-          l.who === "ai" ? (
+          l.who === "booked" ? (
+            <BookedCard key={l.id} visit={l.visit} clinic={clinic} />
+          ) : l.who === "ai" ? (
             <AssistantBubble key={l.id} avatar={lines[i - 1]?.who !== "ai"}>
               {l.text}
             </AssistantBubble>
@@ -1596,7 +1687,21 @@ function Chat({
             </span>
           </div>
         )}
-        {callId && lines.length <= 1 && !pending && !first && (
+        {choices.length > 0 && !pending && !ended && (
+          <div className="cw-in flex flex-wrap gap-2 pl-10 pt-1" role="group" aria-label="Quick answers">
+            {choices.map((c) => (
+              <button
+                key={c.value + c.label}
+                type="button"
+                onClick={() => say(c.value, c.label)}
+                className="rounded-full border border-primary/40 bg-card px-3.5 py-2 text-small font-semibold text-primary shadow-sm transition-colors hover:bg-primary hover:text-primary-foreground"
+              >
+                {c.label}
+              </button>
+            ))}
+          </div>
+        )}
+        {callId && lines.length <= 1 && choices.length === 0 && !pending && !first && (
           <div className="flex flex-wrap gap-2 pl-10 pt-1">
             {STARTERS.map((st) => (
               <button key={st} type="button" onClick={() => say(st)} className="rounded-full border border-primary/30 bg-card px-3 py-1.5 text-small font-medium shadow-sm hover:border-primary hover:bg-secondary">

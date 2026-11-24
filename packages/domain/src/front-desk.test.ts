@@ -3,6 +3,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { ConflictError } from "./errors";
+import { chatChoices } from "./conversation-ai";
 import {
   respond,
   respondTransferFailed,
@@ -661,5 +662,29 @@ describe("with a conversation model (OpenAI mode)", () => {
     const r = await talk(ctx({ channel: "sms" }), port, sam, ["Max needs his checkup", "the second one"]);
     expect(log.booked).toHaveLength(1);
     expect(r.all[0]).not.toContain("Happy");
+  });
+});
+
+describe("tappable answers in the website chat", () => {
+  it("offers the two times and 'Other times' as buttons that send words the engine reads", async () => {
+    const { port } = fakePort();
+    const c = ctx({ channel: "sms", web: true });
+    const r = await talk(c, port, sam, ["book a nail trim for Max"]);
+    expect(r.state.phase).toBe("offering");
+    const choices = chatChoices(r.state, c);
+    expect(choices.map((x) => x.value)).toEqual(["the first one", "the second one", "none of those"]);
+    expect(choices[0]!.label).toMatch(/^(Today|Tomorrow|[A-Z][a-z]+day)/);
+    // Tapping the first button books the first time.
+    const booked = await respond(r.state, choices[0]!.value, c, port);
+    expect(booked.state.booked).toHaveLength(1);
+  });
+
+  it("gives no buttons during an emergency or on the open question", async () => {
+    const { port } = fakePort();
+    const c = ctx({ channel: "sms", web: true });
+    expect(chatChoices(startConversation(c, sam).state, c)).toEqual([]);
+    const r = await talk(c, port, sam, ["My dog ate rat poison and is bleeding"]);
+    expect(r.state.triage.level).toBe("emergency");
+    expect(chatChoices(r.state, c)).toEqual([]);
   });
 });

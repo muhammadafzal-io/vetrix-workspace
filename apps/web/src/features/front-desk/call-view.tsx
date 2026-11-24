@@ -52,6 +52,7 @@ export function CallView({
   onShowChat,
   onEnd,
   onCallAgain,
+  emergency = null,
 }: {
   aiName: string;
   /** e.g. "Main Veterinary Clinic · AI assistant" */
@@ -67,6 +68,8 @@ export function CallView({
   onShowChat: () => void;
   onEnd: () => void;
   onCallAgain: () => void;
+  /** The AI's triage says emergency: the screen turns red with a button to call a person now. */
+  emergency?: { name: string; call: { href: string; text: string } | null; detail: string } | null;
 }) {
   // The ringback plays once while the call connects.
   useEffect(() => {
@@ -80,9 +83,10 @@ export function CallView({
   return (
     <div className="relative flex flex-1 flex-col overflow-hidden text-white">
       <BrandBackdrop waves="30%" />
+      {emergency && <div className="absolute inset-0 bg-gradient-to-b from-red-700/80 via-red-900/60 to-transparent" aria-hidden />}
 
       <div className="relative flex flex-1 flex-col items-center px-6 pb-6 pt-8 text-center">
-        <p className="text-caption font-medium uppercase tracking-wider text-white/60">{phase === "ended" ? "Call ended" : "Voice call"}</p>
+        <p className="text-caption font-medium uppercase tracking-wider text-white/60">{phase === "ended" ? "Call ended" : emergency ? "Possible emergency" : "Voice call"}</p>
         <p className="mt-1 text-small text-white/70">{subtitle}</p>
 
         {/* The face, with rings: ringing while connecting, breathing while it speaks. */}
@@ -135,6 +139,19 @@ export function CallView({
           )}
           {error && <p className="mt-2 rounded-xl bg-destructive/90 px-3 py-2 text-caption text-white">{error}</p>}
         </div>
+
+        {emergency && (
+          <div role="alert" className="mt-4 grid w-full max-w-sm gap-2 rounded-2xl bg-white p-3 text-left text-foreground shadow-lg">
+            <p className="text-small font-semibold text-destructive">{emergency.detail}</p>
+            {emergency.call ? (
+              <a href={emergency.call.href} className="flex h-12 items-center justify-center gap-2 rounded-xl bg-red-600 font-semibold text-white hover:bg-red-700">
+                <Phone className="size-5" aria-hidden /> Call {emergency.name} · {emergency.call.text}
+              </a>
+            ) : (
+              <p className="text-small font-semibold">Go to your nearest emergency vet now.</p>
+            )}
+          </div>
+        )}
 
         <div className="mt-auto w-full">
           {phase === "ended" ? (
