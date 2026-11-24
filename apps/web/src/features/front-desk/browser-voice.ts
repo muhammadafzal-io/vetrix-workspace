@@ -74,7 +74,10 @@ export function stopSpeaking(): void {
 }
 
 export interface Listener {
+  /** Stop and keep what was heard (it is sent). */
   stop(): void;
+  /** Stop and drop what was heard (mute). */
+  abort(): void;
 }
 
 /**
@@ -126,8 +129,13 @@ export function listenOnce(handlers: { onInterim: (text: string) => void; onFina
   }
   return {
     stop() {
-      // Stopping keeps what was heard so far (it is sent); abort would drop it.
+      // Stopping keeps what was heard so far (it is sent); abort drops it.
       rec.stop();
+    },
+    abort() {
+      finalText = "";
+      done = true;
+      rec.abort();
     },
   };
 }
@@ -151,8 +159,12 @@ export function useSpokenTurns(options: {
   busy: boolean;
   ended: boolean;
   onHeard: (text: string) => void;
+  /** False while muted: replies are still read aloud, but nothing is heard. */
+  autoListen?: boolean;
 }) {
   const { active, replies, busy, ended } = options;
+  const autoListen = useRef(options.autoListen ?? true);
+  autoListen.current = options.autoListen ?? true;
   const [state, setState] = useState<VoiceState>("idle");
   const [interim, setInterim] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -216,7 +228,7 @@ export function useSpokenTurns(options: {
     const mine = ++turn.current;
     void speak(fresh.map((r) => r.text)).then(() => {
       if (!live.current || turn.current !== mine) return;
-      if (ended) setState("idle");
+      if (ended || !autoListen.current) setState("idle");
       else listen();
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps -- listen() works through refs
@@ -247,6 +259,13 @@ export function useSpokenTurns(options: {
       setError(null);
     },
     stop,
+    /** Mute: stop listening and drop what was heard; replies are still read aloud. */
+    cancelListening() {
+      listener.current?.abort();
+      listener.current = null;
+      setInterim("");
+      setState((st) => (st === "listening" ? "idle" : st));
+    },
     /** Voice turned on mid-conversation: what was already said is not read out again. */
     skipExisting() {
       spokenUpTo.current = Math.max(spokenUpTo.current, ...replies.map((r) => r.id));
@@ -266,4 +285,41 @@ export function useSpokenTurns(options: {
       }
     },
   };
+}
+
+/**
+ * A short ringback ("calling…") tone made in the browser: the US ring of
+ * 440 Hz + 480 Hz, twice. Returns a function that stops it early. Silent
+ * when the browser blocks audio.
+ */
+export function playRingback(): () => void {
+  if (typeof window === "undefined") return () => {};
+  const Ctx = window.AudioContext ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+  if (!Ctx) return () => {};
+  let ctx: AudioContext;
+  try {
+    ctx = new Ctx();
+  } catch {
+    return () => {};
+  }
+  const gain = ctx.createGain();
+  gain.gain.value = 0;
+  gain.connect(ctx.destination);
+  for (const f of [440, 480]) {
+    const o = ctx.createOscillator();
+    o.frequency.value = f;
+    o.connect(gain);
+    o.start();
+    o.stop(ctx.currentTime + 3.2);
+  }
+  // Two rings: 1 s on, 0.6 s off, at a gentle volume.
+  for (const start of [0, 1.6]) {
+    gain.gain.setValueAtTime(0.06, ctx.currentTime + start);
+    gain.gain.setValueAtTime(0, ctx.currentTime + start + 1);
+  }
+  const stop = () => {
+    void ctx.close().catch(() => undefined);
+  };
+  setTimeout(stop, 3300);
+  return stop;
 }

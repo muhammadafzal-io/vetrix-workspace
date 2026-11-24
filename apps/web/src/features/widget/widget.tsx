@@ -28,6 +28,7 @@ import {
   Sparkles,
   Stethoscope,
   UserRound,
+  Phone,
   Volume2,
   VolumeX,
   X,
@@ -42,6 +43,7 @@ import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
 import { browserVoiceSupport, useSpokenTurns } from "@/features/front-desk/browser-voice";
 import { AssistantAvatar, statusText, type AssistantStatus } from "./avatar";
+import { CallView, OnCallBar, useCallClock, type CallPhase } from "@/features/front-desk/call-view";
 import {
   addPetAction,
   bookAction,
@@ -1368,6 +1370,12 @@ function Chat({
   const nextLine = (who: "ai" | "me", t: string) => ({ id: ++lineId.current, who, text: t });
   const canTalk = useCanTalk();
   const [talking, setTalking] = useState(startTalking);
+  // The call screen (spoken conversations) or the chat; a call can move between them.
+  const [view, setView] = useState<"call" | "chat">(startTalking ? "call" : "chat");
+  const [muted, setMuted] = useState(false);
+  // "Calling…" rings for a moment, then the call connects and the clock starts.
+  const ringStart = useRef(Date.now());
+  const [connectedAt, setConnectedAt] = useState<number | null>(null);
 
   /** Sends one message and shows the replies. */
   const send = async (id: string, body: string) => {
@@ -1440,8 +1448,16 @@ function Chat({
   const sayRef = useRef(say);
   sayRef.current = say;
 
+  useEffect(() => {
+    if (!callId || connectedAt !== null || view !== "call") return;
+    const t = setTimeout(() => setConnectedAt(Date.now()), Math.max(0, 1800 - (Date.now() - ringStart.current)));
+    return () => clearTimeout(t);
+  }, [callId, connectedAt, view]);
+
   const spoken = useSpokenTurns({
-    active: talking && Boolean(callId),
+    // On the call screen the voice starts once the call has connected.
+    active: talking && Boolean(callId) && (view === "chat" || connectedAt !== null),
+    autoListen: !muted,
     replies: useMemo(() => lines.filter((l) => l.who === "ai").map((l) => ({ id: l.id, text: l.text })), [lines]),
     busy: pending,
     ended,
@@ -1449,6 +1465,67 @@ function Chat({
   });
 
   const status: AssistantStatus = pending ? "thinking" : spoken.state === "speaking" ? "speaking" : spoken.state === "listening" ? "listening" : "online";
+
+  const phase: CallPhase = ended ? "ended" : connectedAt === null ? "connecting" : "live";
+  const seconds = useCallClock(connectedAt, phase === "live");
+  const onCall = talking && connectedAt !== null && !ended;
+
+  /** Hang up: the conversation ends (kept under Calls as a web chat). */
+  const hangUp = () => {
+    spoken.stop();
+    setTalking(false);
+    if (idRef.current) void chatEndAction(org, loc, token, idRef.current);
+    idRef.current = null;
+    setEnded(true);
+  };
+  const callAgain = () => {
+    ringStart.current = Date.now();
+    setConnectedAt(null);
+    setMuted(false);
+    setTalking(true);
+    setView("call");
+    begin();
+  };
+  /** From the chat: start a call in this same conversation (it connects at once). */
+  const callFromChat = () => {
+    spoken.skipExisting();
+    setMuted(false);
+    setTalking(true);
+    setConnectedAt(Date.now());
+    setView("call");
+    spoken.listenNow();
+  };
+  const toggleMute = () => {
+    if (!muted) spoken.cancelListening();
+    else if (spoken.state === "idle" && !pending) spoken.listenNow();
+    setMuted((m) => !m);
+  };
+
+  if (view === "call") {
+    const last = lines.at(-1);
+    const caption =
+      spoken.state === "listening" && spoken.interim
+        ? { who: "me" as const, text: spoken.interim }
+        : last
+          ? { who: last.who, text: last.text }
+          : null;
+    return (
+      <CallView
+        aiName={aiName}
+        subtitle={`${clinic.name} · AI assistant`}
+        phase={phase}
+        status={status}
+        seconds={seconds}
+        caption={caption}
+        muted={muted}
+        error={error ?? spoken.error}
+        onToggleMute={toggleMute}
+        onShowChat={() => setView("chat")}
+        onEnd={hangUp}
+        onCallAgain={callAgain}
+      />
+    );
+  }
 
   const mic = () => {
     if (!talking) {
@@ -1476,7 +1553,12 @@ function Chat({
           </span>
           <span className={cn("truncate text-caption", status === "online" ? "text-muted-foreground" : "font-medium text-primary")}>{statusText(status, clinic.open)}</span>
         </div>
-        {canTalk && (
+        {canTalk && callId && !ended && !onCall && (
+          <IconButton label={`Call ${aiName}`} onClick={callFromChat}>
+            <Phone className="size-5 text-primary" aria-hidden />
+          </IconButton>
+        )}
+        {canTalk && !onCall && (
           <IconButton label={talking ? `Mute ${aiName}'s voice` : `Hear ${aiName}'s replies`} onClick={() => (talking ? setTalking(false) : (spoken.skipExisting(), setTalking(true)))}>
             {talking ? <Volume2 className="size-5 text-primary" aria-hidden /> : <VolumeX className="size-5" aria-hidden />}
           </IconButton>
@@ -1487,6 +1569,7 @@ function Chat({
           </IconButton>
         )}
       </div>
+      {onCall && <OnCallBar aiName={aiName} seconds={seconds} onReturn={() => setView("call")} />}
       <div className="border-b bg-danger-soft/50 px-4 py-1.5">
         <Emergency clinic={clinic} />
       </div>

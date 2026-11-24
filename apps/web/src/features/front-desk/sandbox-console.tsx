@@ -16,6 +16,8 @@ import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
 import type { ConsoleResult } from "./actions";
 import { browserVoiceSupport, useSpokenTurns } from "./browser-voice";
+import { CallView, OnCallBar, useCallClock, type CallPhase } from "./call-view";
+import type { AssistantStatus } from "@/features/widget/avatar";
 import { SandboxBadge, TriageBadge } from "./labels";
 
 export interface QuickCaller {
@@ -80,8 +82,20 @@ export function SandboxConsole({
   const talking = channel === "voice" && canTalk && talkChoice;
   const callLive = Boolean(callId) && talking;
   const sendRef = useRef<(m: string) => void>(() => {});
+  // A spoken call shows the call screen: "Calling…" (ringing), then a clock.
+  const [view, setView] = useState<"call" | "chat">("call");
+  const [calling, setCalling] = useState(false);
+  const [muted, setMuted] = useState(false);
+  const ringStart = useRef(0);
+  const [connectedAt, setConnectedAt] = useState<number | null>(null);
+  useEffect(() => {
+    if (!callId || !talking || connectedAt !== null) return;
+    const t = setTimeout(() => setConnectedAt(Date.now()), Math.max(0, 1800 - (Date.now() - ringStart.current)));
+    return () => clearTimeout(t);
+  }, [callId, talking, connectedAt]);
   const voice = useSpokenTurns({
-    active: callLive,
+    active: callLive && connectedAt !== null,
+    autoListen: !muted,
     replies: useMemo(() => lines.filter((l) => l.speaker === "ai").map((l) => ({ id: l.id, text: l.body })), [lines]),
     busy: pending,
     ended,
@@ -97,9 +111,19 @@ export function SandboxConsole({
 
   function start() {
     setError(null);
+    if (talking) {
+      ringStart.current = Date.now();
+      setConnectedAt(null);
+      setMuted(false);
+      setView("call");
+      setCalling(true);
+    }
     startTransition(async () => {
       const r = await actions.start({ channel, callerNumber: number });
-      if (!r.ok) return setError(r.error);
+      if (!r.ok) {
+        setCalling(false);
+        return setError(r.error);
+      }
       setCallId(r.callId);
       setLines([]);
       setLevel("routine");
@@ -140,6 +164,8 @@ export function SandboxConsole({
 
   function reset() {
     voice.reset();
+    setCalling(false);
+    setConnectedAt(null);
     setCallId(null);
     setLines([]);
     setEnded(false);
@@ -149,6 +175,45 @@ export function SandboxConsole({
 
   const digits = (v: string) => v.replace(/\D/g, "").replace(/^1(?=\d{10}$)/, "");
   const chosen = callers.find((c) => digits(c.mobile) === digits(number));
+
+  const status: AssistantStatus = pending ? "thinking" : voice.state === "speaking" ? "speaking" : voice.state === "listening" ? "listening" : "online";
+  const phase: CallPhase = ended ? "ended" : connectedAt === null ? "connecting" : "live";
+  const seconds = useCallClock(connectedAt, phase === "live");
+
+  if (talking && (calling || callId) && view === "call") {
+    const last = [...lines].reverse().find((l) => l.speaker !== "system");
+    return (
+      <section className="mx-auto flex h-[min(680px,calc(100dvh-12rem))] w-full max-w-md flex-col overflow-hidden rounded-2xl shadow-card">
+        <CallView
+          aiName={aiName}
+          subtitle={`${chosen ? chosen.name : number} · Sandbox`}
+          phase={phase}
+          status={status}
+          seconds={seconds}
+          caption={
+            voice.state === "listening" && voice.interim
+              ? { who: "me", text: voice.interim }
+              : last
+                ? { who: last.speaker === "ai" ? "ai" : "me", text: last.body }
+                : null
+          }
+          muted={muted}
+          error={error ?? voice.error}
+          onToggleMute={() => {
+            if (!muted) voice.cancelListening();
+            else if (voice.state === "idle" && !pending) voice.listenNow();
+            setMuted((m) => !m);
+          }}
+          onShowChat={() => setView("chat")}
+          onEnd={() => (callId && !ended ? hangUp() : reset())}
+          onCallAgain={() => {
+            reset();
+            start();
+          }}
+        />
+      </section>
+    );
+  }
 
   if (!callId) {
     return (
@@ -267,6 +332,7 @@ export function SandboxConsole({
         </div>
       </header>
 
+      {talking && phase === "live" && <OnCallBar aiName={aiName} seconds={seconds} onReturn={() => setView("call")} />}
       <div className="grid max-h-[60vh] min-h-[320px] content-start gap-3 overflow-y-auto bg-muted/30 px-4 py-5" aria-live="polite">
         {lines.map((l) =>
           l.speaker === "system" ? (

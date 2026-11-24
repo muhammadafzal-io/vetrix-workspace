@@ -292,6 +292,24 @@
 .cw-breathe { animation: cw-breathe 1.6s ease-in-out infinite; }
 .cw-talk { animation: cw-talk 0.32s ease-in-out infinite; transform-box: fill-box; transform-origin: center; }
 .cw-blink { animation: cw-blink 1s ease-in-out infinite; }
+/* Call screen: ringing rings, sound bars and the "Calling…" dots. */
+@keyframes cw-ring {
+  from { transform: scale(1); opacity: 0.9; }
+  to { transform: scale(2.1); opacity: 0; }
+}
+@keyframes cw-bar {
+  0%, 100% { height: 0.25rem; }
+  50% { height: 2rem; }
+}
+@keyframes cw-dots {
+  0% { content: ""; }
+  33% { content: "."; }
+  66% { content: ".."; }
+  100% { content: "..."; }
+}
+.cw-ring { animation: cw-ring 1.8s cubic-bezier(0, 0, 0.2, 1) infinite; }
+.cw-bar { animation: cw-bar 0.7s ease-in-out infinite; }
+.cw-dots::after { content: "..."; display: inline-block; width: 1.2em; text-align: left; animation: cw-dots 1.2s steps(1) infinite; }
 @media (prefers-reduced-motion: reduce) {
-  .cw-in, .cw-ping, .cw-breathe, .cw-talk, .cw-blink { animation: none; }
+  .cw-in, .cw-ping, .cw-breathe, .cw-talk, .cw-blink, .cw-ring, .cw-bar, .cw-dots::after { animation: none; }
 }

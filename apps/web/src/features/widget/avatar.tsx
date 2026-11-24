@@ -6,9 +6,20 @@ import { cn } from "@/lib/utils";
 
 export type AssistantStatus = "online" | "thinking" | "speaking" | "listening";
 
-const SIZE = { sm: "size-8", md: "size-11", lg: "size-16" } as const;
+const SIZE = { sm: "size-8", md: "size-11", lg: "size-16", xl: "size-28" } as const;
 
-export function AssistantAvatar({ status = "online", size = "md", className }: { status?: AssistantStatus; size?: keyof typeof SIZE; className?: string }) {
+export function AssistantAvatar({
+  status = "online",
+  size = "md",
+  offline = false,
+  className,
+}: {
+  status?: AssistantStatus;
+  size?: keyof typeof SIZE;
+  /** After a call ends: a grey dot instead of the green "online" one. */
+  offline?: boolean;
+  className?: string;
+}) {
   return (
     <span className={cn("relative inline-flex shrink-0", SIZE[size], className)} aria-hidden>
       {/* Listening: a ring that grows outwards. Speaking: a soft glow that breathes. */}
@@ -42,8 +53,8 @@ export function AssistantAvatar({ status = "online", size = "md", className }: {
       <span
         className={cn(
           "absolute bottom-0 right-0 rounded-full border-2 border-card",
-          size === "lg" ? "size-4" : "size-3",
-          status === "thinking" ? "cw-blink bg-amber-400" : "bg-emerald-500",
+          size === "xl" ? "size-6 border-4" : size === "lg" ? "size-4" : "size-3",
+          offline ? "bg-slate-400" : status === "thinking" ? "cw-blink bg-amber-400" : "bg-emerald-500",
         )}
       />
     </span>
