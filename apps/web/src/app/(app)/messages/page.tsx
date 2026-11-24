@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { redirect } from "next/navigation";
 import Link from "next/link";
 import { ChevronRight, Mail, MessageSquareText, Phone } from "lucide-react";
 import { formatPhone, MESSAGE_KIND_LABEL } from "@vetrix/domain";
@@ -6,6 +7,7 @@ import { listMessages } from "@vetrix/db/runtime";
 import { EmptyState } from "@/components/patterns/empty-state";
 import { PageHeader } from "@/components/patterns/page-header";
 import { Pagination } from "@/components/patterns/pagination";
+import { outOfRange, pageUrl, readPaging } from "@/lib/paging";
 import { SearchBox } from "@/components/patterns/search-box";
 import { requirePage } from "@/features/clients/access";
 import { formatWhen } from "@/features/front-desk/labels";
@@ -13,19 +15,22 @@ import { MessageStatusBadge } from "@/features/messages/status";
 import { cn } from "@/lib/utils";
 
 export const metadata: Metadata = { title: "Messages · Vetrix" };
-const PAGE_SIZE = 30;
+const DEFAULT_SIZE = 25;
 const FILTERS = [
   { value: undefined, label: "All" },
   { value: "sms", label: "Texts" },
   { value: "email", label: "Emails" },
 ] as const;
 
-export default async function MessagesPage({ searchParams }: { searchParams: Promise<{ channel?: string; q?: string; page?: string }> }) {
+export default async function MessagesPage({ searchParams }: { searchParams: Promise<{ channel?: string; q?: string; page?: string; size?: string }> }) {
   const shell = await requirePage("messages.view");
   const sp = await searchParams;
   const channel = sp.channel === "sms" || sp.channel === "email" ? sp.channel : undefined;
-  const page = Math.max(1, Number(sp.page) || 1);
-  const { rows, total } = await listMessages(shell.clinic, shell.location.id, { channel, q: sp.q, limit: PAGE_SIZE, offset: (page - 1) * PAGE_SIZE });
+  const { page, pageSize, offset } = readPaging(sp, { defaultSize: DEFAULT_SIZE });
+  const { rows, total } = await listMessages(shell.clinic, shell.location.id, { channel, q: sp.q, limit: pageSize, offset });
+  const last = outOfRange(page, total, pageSize);
+  if (last) redirect(pageUrl("/messages", sp, last));
+
   const tz = shell.location.timezone;
 
   return (
@@ -88,7 +93,7 @@ export default async function MessagesPage({ searchParams }: { searchParams: Pro
           })}
         </ul>
       )}
-      <Pagination page={page} pageSize={PAGE_SIZE} total={total} basePath="/messages" params={{ channel, q: sp.q }} />
+      <Pagination page={page} pageSize={pageSize} defaultSize={DEFAULT_SIZE} total={total} basePath="/messages" params={{ channel, q: sp.q }} />
     </>
   );
 }

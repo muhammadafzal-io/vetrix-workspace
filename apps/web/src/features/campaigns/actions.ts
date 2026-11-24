@@ -125,6 +125,9 @@ export async function updateBasicsAction(id: string, _: ActionResult | null, f: 
   return { ok: true, message: "Saved." };
 }
 
+/** People per page in "See who is included". */
+const SAMPLE_PAGE = 20;
+
 export type PreviewResult = { ok: true; preview: AudiencePreview } | { ok: false; error: string };
 
 async function checkedAudience(shell: Awaited<ReturnType<typeof requireShell>>, raw: unknown): Promise<Audience> {
@@ -133,7 +136,7 @@ async function checkedAudience(shell: Awaited<ReturnType<typeof requireShell>>, 
 }
 
 /** Live count while staff build the rules. Nothing is saved. */
-export async function previewAudienceAction(id: string, raw: unknown, channels: CampaignChannel[]): Promise<PreviewResult> {
+export async function previewAudienceAction(id: string, raw: unknown, channels: CampaignChannel[], sampleOffset = 0): Promise<PreviewResult> {
   try {
     const { shell } = await allowed();
     const audience = await checkedAudience(shell, raw);
@@ -144,6 +147,8 @@ export async function previewAudienceAction(id: string, raw: unknown, channels: 
       today: clinicToday(shell.location.timezone),
       now: Date.now(),
       campaignId: campaignId(id),
+      sampleOffset: Number.isInteger(sampleOffset) && sampleOffset >= 0 ? sampleOffset : 0,
+      sampleLimit: SAMPLE_PAGE,
     });
     return { ok: true, preview };
   } catch (error) {

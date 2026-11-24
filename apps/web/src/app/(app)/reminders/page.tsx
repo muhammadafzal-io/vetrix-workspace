@@ -4,6 +4,9 @@ import { BellRing, CheckCircle2, Mail, MessageSquareText, PauseCircle, PhoneCall
 import { isQuietHours, localParts, reminderCounts, type Species } from "@vetrix/domain";
 import { messagingSettings, previewReminders, remindersPaused, retentionStats, type RetentionStats } from "@vetrix/db/runtime";
 import { Panel } from "@/components/patterns/detail-list";
+import { Pagination } from "@/components/patterns/pagination";
+import { outOfRange, pageUrl, readPaging, slicePage } from "@/lib/paging";
+import { redirect } from "next/navigation";
 import { EmptyState } from "@/components/patterns/empty-state";
 import { PageHeader } from "@/components/patterns/page-header";
 import { Alert } from "@/components/ui/alert";
@@ -31,7 +34,7 @@ function dueText(dueIn: number) {
   return dueIn > 0 ? `Due in ${dueIn} day${dueIn === 1 ? "" : "s"}` : `${-dueIn} day${dueIn === -1 ? "" : "s"} overdue`;
 }
 
-export default async function RemindersPage({ searchParams }: { searchParams: Promise<{ asOf?: string; rule?: string; show?: string }> }) {
+export default async function RemindersPage({ searchParams }: { searchParams: Promise<{ asOf?: string; rule?: string; show?: string; page?: string; size?: string; rulesPage?: string }> }) {
   const shell = await requirePage("reminders.manage");
   const sp = await searchParams;
   const sandbox = getMessagingMode() === "sandbox";
@@ -48,7 +51,14 @@ export default async function RemindersPage({ searchParams }: { searchParams: Pr
   // The rules as this clinic runs them (its own schedule where it has one).
   const rules = (input.rules as Rule[]).filter((r) => counts.has(`${r.id}:all`) || rows.some((x) => x.ruleId === r.id));
   const dueNow = rows.filter((r) => r.nextTouch);
+  // Two lists, each with its own page in the address: the reminders (page, size) and the rule counts (rulesPage).
+  const listPaging = readPaging(sp, { defaultSize: 25 });
+  const rulePaging = readPaging(sp, { defaultSize: 10, pageParam: "rulesPage", sizeParam: "rulesSize" });
   const visible = rows.filter((r) => (sp.rule ? r.ruleId === sp.rule : true) && (sp.show === "all" ? true : r.nextTouch || r.suppressed || r.lastSent));
+  const lastList = outOfRange(listPaging.page, visible.length, listPaging.pageSize);
+  if (lastList) redirect(pageUrl("/reminders", sp, lastList));
+  const lastRules = outOfRange(rulePaging.page, rules.length, rulePaging.pageSize);
+  if (lastRules) redirect(pageUrl("/reminders", sp, lastRules, "rulesPage"));
   const href = (q: Record<string, string | undefined>) => ({ pathname: "/reminders", query: Object.fromEntries(Object.entries({ asOf: asOf !== today ? asOf : undefined, rule: sp.rule, show: sp.show, ...q }).filter(([, v]) => v)) });
 
   return (
@@ -109,7 +119,7 @@ export default async function RemindersPage({ searchParams }: { searchParams: Pr
                 </tr>
               </thead>
               <tbody>
-                {rules.flatMap((r) =>
+                {slicePage(rules, rulePaging).flatMap((r) =>
                   r.touches.map((t, i) => {
                     const off = t.offset_days ?? Math.floor((t.offset_hours ?? 0) / 24);
                     return (
@@ -126,6 +136,19 @@ export default async function RemindersPage({ searchParams }: { searchParams: Pr
               </tbody>
             </table>
           </div>
+          <Pagination
+            page={rulePaging.page}
+            pageSize={rulePaging.pageSize}
+            defaultSize={10}
+            total={rules.length}
+            basePath="/reminders"
+            params={{ asOf: asOf !== today ? asOf : undefined, rule: sp.rule, show: sp.show, page: sp.page, size: sp.size }}
+            pageParam="rulesPage"
+            sizeParam="rulesSize"
+            showSizes={false}
+            label="Rule pages"
+            noun="rules"
+          />
         </Panel>
       </div>
 
@@ -147,7 +170,7 @@ export default async function RemindersPage({ searchParams }: { searchParams: Pr
         <EmptyState icon={BellRing} title="No reminders due" description="When pets are due for a visit, vaccine or refill, they appear here." />
       ) : (
         <ul className="grid gap-2">
-          {visible.map((r) => {
+          {slicePage(visible, listPaging).map((r) => {
             const t = r.nextTouch;
             return (
               <li key={`${r.ruleId}-${r.patientId}-${r.dueAt}`} className={cn("flex flex-col gap-3 rounded-lg border bg-card p-4 shadow-card sm:flex-row sm:items-center", r.suppressed && "opacity-75")}>
@@ -196,6 +219,16 @@ export default async function RemindersPage({ searchParams }: { searchParams: Pr
           })}
         </ul>
       )}
+      <Pagination
+        page={listPaging.page}
+        pageSize={listPaging.pageSize}
+        defaultSize={25}
+        total={visible.length}
+        basePath="/reminders"
+        params={{ asOf: asOf !== today ? asOf : undefined, rule: sp.rule, show: sp.show, rulesPage: sp.rulesPage }}
+        label="Reminder pages"
+        noun="reminders"
+      />
     </>
   );
 }

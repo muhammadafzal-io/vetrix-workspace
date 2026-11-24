@@ -46,7 +46,10 @@ describe.skipIf(!url)("clients and patients on the clinic database", () => {
       expect((await searchClients(db, loc, { q: `${digits.slice(0, 3)}-${digits.slice(3)}` })).rows.map((c) => c.id)).toContain(maria.id);
       expect((await searchClients(db, loc, { q: "Penny" })).rows.map((c) => c.id)).toContain(maria.id);
       const all = await searchClients(db, loc, { limit: 10 });
-      expect(all.total).toBe(50);
+      // The total is every client at the location (the sample clinic has 50; dev databases may have test clients too).
+      const count = (await db.query<{ n: number }>(`SELECT count(*)::int AS n FROM clients WHERE location_id = $1`, [loc])).rows[0]!.n;
+      expect(all.total).toBe(count);
+      expect(count).toBeGreaterThanOrEqual(50);
       expect(all.rows).toHaveLength(10);
     }), 60_000);
 

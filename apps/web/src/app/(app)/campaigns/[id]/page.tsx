@@ -1,10 +1,13 @@
 import type { Metadata } from "next";
+import { redirect } from "next/navigation";
 import Link from "next/link";
 import { ArrowLeft, Sparkles } from "lucide-react";
 import { checkCampaignCopy, describeAudience, SKIP_REASON_LABEL, type CampaignChannel, type CopyIssue, type SkipReason } from "@vetrix/domain";
 import { audienceOptions, campaignFacts, campaignResults, forbiddenCampaignTerms, getCampaign, previewAudience } from "@vetrix/db/runtime";
 import { Panel } from "@/components/patterns/detail-list";
 import { PageHeader } from "@/components/patterns/page-header";
+import { Pagination } from "@/components/patterns/pagination";
+import { outOfRange, pageUrl, readPaging } from "@/lib/paging";
 import { Alert } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { assertId, orNotFound, requirePage } from "@/features/clients/access";
@@ -24,10 +27,13 @@ export const metadata: Metadata = { title: "Campaign · Vetrix" };
 const CHANNEL: Record<CampaignChannel, string> = { sms: "Text", email: "Email" };
 const MESSAGE_STATUS: Record<string, string> = { simulated: "Saved (Sandbox)", queued: "Waiting to send", sent: "Sent", delivered: "Delivered", failed: "Failed" };
 
-export default async function CampaignPage({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<{ built?: string }> }) {
+export default async function CampaignPage({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<{ built?: string; rpage?: string; rsize?: string }> }) {
   const shell = await requirePage("campaigns.manage");
   const id = assertId((await params).id);
-  const built = (await searchParams).built;
+  const sp = await searchParams;
+  const built = sp.built;
+  // The people in the campaign are paged on their own (rpage, rsize), so the rest of the page stays put.
+  const recipientPaging = readPaging(sp, { defaultSize: 25, pageParam: "rpage", sizeParam: "rsize" });
   const loc = shell.location.id;
   const c = await orNotFound(getCampaign(shell.clinic, loc, id));
   const [options, facts] = await Promise.all([audienceOptions(shell.clinic, loc), campaignFacts(shell.clinic, loc, c.goal)]);
@@ -56,7 +62,9 @@ export default async function CampaignPage({ params, searchParams }: { params: P
     const p = await previewAudience(shell.clinic, { locationId: loc, audience: c.audience, channels: c.channels, today: clinicToday(shell.location.timezone), now: Date.now(), campaignId: id });
     reach = `Today it would reach ${c.channels.map((ch) => `${p.perChannel[ch]?.send ?? 0} by ${CHANNEL[ch].toLowerCase()}`).join(" and ")} (of ${p.clients} matching clients).`;
   }
-  const results = started ? await campaignResults(shell.clinic, loc, id) : null;
+  const results = started ? await campaignResults(shell.clinic, loc, id, { limit: recipientPaging.pageSize, offset: recipientPaging.offset }) : null;
+  const lastRecipients = results ? outOfRange(recipientPaging.page, results.recipientsTotal, recipientPaging.pageSize) : null;
+  if (lastRecipients) redirect(pageUrl(`/campaigns/${id}`, sp, lastRecipients, "rpage"));
   const sendAtText = c.send_at
     ? new Intl.DateTimeFormat("en-US", { timeZone: shell.location.timezone, weekday: "short", day: "numeric", month: "short", hour: "numeric", minute: "2-digit" }).format(c.send_at)
     : null;
@@ -98,8 +106,8 @@ export default async function CampaignPage({ params, searchParams }: { params: P
                 </div>
               ))}
             </dl>
-            <details className="mt-4 text-small">
-              <summary className="cursor-pointer font-medium text-primary">Everyone in this campaign ({results.recipients.length})</summary>
+            <details id="recipients" className="mt-4 scroll-mt-24 text-small" open={Boolean(sp.rpage || sp.rsize)}>
+              <summary className="cursor-pointer font-medium text-primary">Everyone in this campaign ({results.recipientsTotal.toLocaleString("en-US")})</summary>
               <ul className="mt-2 grid">
                 {results.recipients.map((r, i) => (
                   <li key={i} className="flex flex-wrap items-center justify-between gap-2 border-t py-1.5">
@@ -113,6 +121,19 @@ export default async function CampaignPage({ params, searchParams }: { params: P
                   </li>
                 ))}
               </ul>
+              <Pagination
+                page={recipientPaging.page}
+                pageSize={recipientPaging.pageSize}
+                defaultSize={25}
+                total={results.recipientsTotal}
+                basePath={`/campaigns/${id}`}
+                params={{}}
+                pageParam="rpage"
+                sizeParam="rsize"
+                anchor="recipients"
+                label="Pages of people in this campaign"
+                noun="rows"
+              />
             </details>
           </Panel>
         )}

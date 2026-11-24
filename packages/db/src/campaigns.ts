@@ -63,13 +63,17 @@ const CAMPAIGN_COLUMNS = `c.id, c.name, c.goal, c.audience, c.channels, c.status
   (SELECT count(*) FROM campaign_recipients r WHERE r.campaign_id = c.id AND r.status = 'sent')::int AS sent,
   (SELECT count(*) FROM campaign_recipients r WHERE r.campaign_id = c.id AND r.status = 'skipped')::int AS skipped`;
 
-export async function listCampaigns(db: SqlClient, locationId: string): Promise<CampaignRow[]> {
-  const { rows } = await db.query<CampaignRow>(
-    `SELECT ${CAMPAIGN_COLUMNS} FROM campaigns c LEFT JOIN staff_users su ON su.id = c.approved_by
-     WHERE c.location_id = $1 ORDER BY c.created_at DESC LIMIT 200`,
-    [locationId],
-  );
-  return rows;
+/** Newest first, a page at a time, with the total for the pager. */
+export async function listCampaigns(db: SqlClient, locationId: string, options: { limit: number; offset: number }): Promise<{ rows: CampaignRow[]; total: number }> {
+  const [list, count] = await Promise.all([
+    db.query<CampaignRow>(
+      `SELECT ${CAMPAIGN_COLUMNS} FROM campaigns c LEFT JOIN staff_users su ON su.id = c.approved_by
+       WHERE c.location_id = $1 ORDER BY c.created_at DESC, c.id LIMIT $2 OFFSET $3`,
+      [locationId, Math.min(Math.max(options.limit, 1), 100), Math.max(options.offset, 0)],
+    ),
+    db.query<{ n: number }>(`SELECT count(*)::int AS n FROM campaigns WHERE location_id = $1`, [locationId]),
+  ]);
+  return { rows: list.rows, total: count.rows[0]?.n ?? 0 };
 }
 
 export async function getCampaign(db: SqlClient, locationId: string, id: string): Promise<CampaignRow & { content: CampaignContent[] }> {
@@ -220,16 +224,26 @@ export interface AudiencePreview {
   clients: number;
   pets: number;
   perChannel: Partial<Record<CampaignChannel, { send: number; skipped: Partial<Record<SkipReason, number>> }>>;
+  /** One page of who is included, by client name. */
   sample: { clientName: string; petNames: string; channels: Partial<Record<CampaignChannel, SkipReason | null>> }[];
+  sampleOffset: number;
 }
 
 /** Who the rules select today and who could actually receive it on each channel. */
-export async function previewAudience(db: SqlClient, input: { locationId: string; audience: Audience; channels: CampaignChannel[]; today: string; now: number; campaignId?: string }): Promise<AudiencePreview> {
+export async function previewAudience(
+  db: SqlClient,
+  input: { locationId: string; audience: Audience; channels: CampaignChannel[]; today: string; now: number; campaignId?: string; sampleOffset?: number; sampleLimit?: number },
+): Promise<AudiencePreview> {
   const data = await loadAudienceData(db, input.locationId, input.today, input.campaignId);
   const selected = selectAudience(input.audience, data.pets, input.today);
-  const preview: AudiencePreview = { clients: selected.size, pets: 0, perChannel: {}, sample: [] };
+  const sampleOffset = Math.max(input.sampleOffset ?? 0, 0);
+  const sampleLimit = Math.min(Math.max(input.sampleLimit ?? 20, 1), 100);
+  const preview: AudiencePreview = { clients: selected.size, pets: 0, perChannel: {}, sample: [], sampleOffset };
+  // By client name, so pages of "who is included" are stable.
+  const ordered = [...selected].sort(([a], [b]) => (data.clients.get(a)?.name ?? "").localeCompare(data.clients.get(b)?.name ?? "") || a.localeCompare(b));
+  let index = 0;
   for (const ch of input.channels) preview.perChannel[ch] = { send: 0, skipped: {} };
-  for (const [clientId, pets] of selected) {
+  for (const [clientId, pets] of ordered) {
     preview.pets += pets.length;
     const client = data.clients.get(clientId);
     if (!client) continue;
@@ -241,7 +255,8 @@ export async function previewAudience(db: SqlClient, input: { locationId: string
       if (why) bucket.skipped[why] = (bucket.skipped[why] ?? 0) + 1;
       else bucket.send += 1;
     }
-    if (preview.sample.length < 20) preview.sample.push(row);
+    if (index >= sampleOffset && index < sampleOffset + sampleLimit) preview.sample.push(row);
+    index += 1;
   }
   return preview;
 }
@@ -573,10 +588,16 @@ export interface CampaignResults {
   unsubscribed: number;
   /** Clients who booked a visit within 14 days of their message. */
   booked: number;
+  /** Everyone in the campaign (rows), for the pager; `recipients` is one page. */
+  recipientsTotal: number;
   recipients: { clientName: string; petNames: string | null; channel: CampaignChannel; status: string; skipReason: SkipReason | null; messageStatus: string | null }[];
 }
 
-export async function campaignResults(db: SqlClient, locationId: string, id: string): Promise<CampaignResults> {
+/**
+ * The numbers across everyone in the campaign, and one page of the people
+ * (`recipientsTotal` for the pager).
+ */
+export async function campaignResults(db: SqlClient, locationId: string, id: string, page: { limit: number; offset: number } = { limit: 25, offset: 0 }): Promise<CampaignResults> {
   const { rows } = await db.query<{ client_name: string; client_id: string; pet_names: string | null; channel: CampaignChannel; status: string; skip_reason: SkipReason | null; message_status: string | null; unsubscribed: boolean; booked: boolean }>(
     `SELECT c.first_name || ' ' || c.last_name AS client_name, r.client_id, r.pet_names, r.channel, r.status, r.skip_reason, m.status AS message_status,
             r.unsubscribed_at IS NOT NULL AS unsubscribed,
@@ -587,10 +608,12 @@ export async function campaignResults(db: SqlClient, locationId: string, id: str
      FROM campaign_recipients r JOIN campaigns k ON k.id = r.campaign_id JOIN clients c ON c.id = r.client_id
      LEFT JOIN messages m ON m.id = r.message_id
      WHERE r.campaign_id = $1 AND k.location_id = $2
-     ORDER BY r.status DESC, client_name, r.channel`,
+     ORDER BY r.status DESC, client_name, r.client_id, r.channel`,
     [id, locationId],
   );
-  const out: CampaignResults = { sent: 0, delivered: 0, failed: 0, pending: 0, simulated: 0, waiting: 0, skipped: {}, unsubscribed: 0, booked: 0, recipients: [] };
+  const out: CampaignResults = { sent: 0, delivered: 0, failed: 0, pending: 0, simulated: 0, waiting: 0, skipped: {}, unsubscribed: 0, booked: 0, recipients: [], recipientsTotal: rows.length };
+  const limit = Math.min(Math.max(page.limit, 1), 100);
+  const offset = Math.max(page.offset, 0);
   const bookedClients = new Set<string>();
   for (const r of rows) {
     if (r.status === "skipped" && r.skip_reason) out.skipped[r.skip_reason] = (out.skipped[r.skip_reason] ?? 0) + 1;
@@ -602,7 +625,9 @@ export async function campaignResults(db: SqlClient, locationId: string, id: str
     if (r.message_status === "simulated") out.simulated += 1;
     if (r.unsubscribed) out.unsubscribed += 1;
     if (r.booked) bookedClients.add(r.client_id);
-    if (out.recipients.length < 500) out.recipients.push({ clientName: r.client_name, petNames: r.pet_names, channel: r.channel, status: r.status, skipReason: r.skip_reason, messageStatus: r.message_status });
+  }
+  for (const r of rows.slice(offset, offset + limit)) {
+    out.recipients.push({ clientName: r.client_name, petNames: r.pet_names, channel: r.channel, status: r.status, skipReason: r.skip_reason, messageStatus: r.message_status });
   }
   out.booked = bookedClients.size;
   return out;

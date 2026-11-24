@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { redirect } from "next/navigation";
 import Link from "next/link";
 import { ChevronRight, Plus, Upload, Users } from "lucide-react";
 import { formatPhone } from "@vetrix/domain";
@@ -6,6 +7,7 @@ import { searchClients } from "@vetrix/db/runtime";
 import { EmptyState } from "@/components/patterns/empty-state";
 import { PageHeader } from "@/components/patterns/page-header";
 import { Pagination } from "@/components/patterns/pagination";
+import { outOfRange, pageUrl, readPaging } from "@/lib/paging";
 import { SearchBox } from "@/components/patterns/search-box";
 import { Badge } from "@/components/ui/badge";
 import { buttonVariants } from "@/components/ui/button";
@@ -15,13 +17,17 @@ import { SpeciesIcon } from "@/features/clients/species-icon";
 import { cn } from "@/lib/utils";
 
 export const metadata: Metadata = { title: "Clients · Vetrix" };
-const PAGE_SIZE = 25;
+const DEFAULT_SIZE = 25;
 
-export default async function ClientsPage({ searchParams }: { searchParams: Promise<{ q?: string; page?: string }> }) {
+export default async function ClientsPage({ searchParams }: { searchParams: Promise<{ q?: string; page?: string; size?: string }> }) {
   const shell = await requirePage("clients.view");
-  const { q, page: pageParam } = await searchParams;
-  const page = Math.max(1, Number(pageParam) || 1);
-  const { rows, total } = await searchClients(shell.clinic, shell.location.id, { q, limit: PAGE_SIZE, offset: (page - 1) * PAGE_SIZE });
+  const sp = await searchParams;
+  const { q } = sp;
+  const { page, pageSize, offset } = readPaging(sp, { defaultSize: DEFAULT_SIZE });
+  const { rows, total } = await searchClients(shell.clinic, shell.location.id, { q, limit: pageSize, offset });
+  const last = outOfRange(page, total, pageSize);
+  if (last) redirect(pageUrl("/clients", sp, last));
+
   const canAdd = shell.permissions.has("clients.manage");
   const canImport = canAdd && shell.permissions.has("patients.manage");
 
@@ -109,7 +115,7 @@ export default async function ClientsPage({ searchParams }: { searchParams: Prom
           ))}
         </ul>
       )}
-      <Pagination page={page} pageSize={PAGE_SIZE} total={total} basePath="/clients" params={{ q }} />
+      <Pagination page={page} pageSize={pageSize} defaultSize={DEFAULT_SIZE} total={total} basePath="/clients" params={{ q }} />
     </>
   );
 }

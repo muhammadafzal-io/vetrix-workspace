@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { redirect } from "next/navigation";
 import Link from "next/link";
 import { ChevronRight, PawPrint } from "lucide-react";
 import { ageInMonths, formatAge, SPECIES, type PatientStatus, type Species } from "@vetrix/domain";
@@ -6,6 +7,7 @@ import { searchPatients } from "@vetrix/db/runtime";
 import { EmptyState } from "@/components/patterns/empty-state";
 import { PageHeader } from "@/components/patterns/page-header";
 import { Pagination } from "@/components/patterns/pagination";
+import { outOfRange, pageUrl, readPaging } from "@/lib/paging";
 import { SearchBox } from "@/components/patterns/search-box";
 import { Badge } from "@/components/ui/badge";
 import { requirePage } from "@/features/clients/access";
@@ -15,7 +17,7 @@ import { clinicToday } from "@/lib/clinic-date";
 import { cn } from "@/lib/utils";
 
 export const metadata: Metadata = { title: "Patients · Vetrix" };
-const PAGE_SIZE = 25;
+const DEFAULT_SIZE = 25;
 const STATUSES: { value: PatientStatus | "all"; label: string }[] = [
   { value: "active", label: "Active" },
   { value: "deceased", label: "Deceased" },
@@ -25,20 +27,22 @@ const STATUSES: { value: PatientStatus | "all"; label: string }[] = [
 export default async function PatientsPage({
   searchParams,
 }: {
-  searchParams: Promise<{ q?: string; page?: string; status?: string; species?: string }>;
+  searchParams: Promise<{ q?: string; page?: string; size?: string; status?: string; species?: string }>;
 }) {
   const shell = await requirePage("patients.view");
   const sp = await searchParams;
-  const page = Math.max(1, Number(sp.page) || 1);
+  const { page, pageSize, offset } = readPaging(sp, { defaultSize: DEFAULT_SIZE });
   const status = (STATUSES.find((s) => s.value === sp.status)?.value ?? "active") as PatientStatus | "all";
   const species = (SPECIES as readonly string[]).includes(sp.species ?? "") ? (sp.species as Species) : undefined;
   const { rows, total } = await searchPatients(shell.clinic, shell.location.id, {
     q: sp.q,
     status,
     species,
-    limit: PAGE_SIZE,
-    offset: (page - 1) * PAGE_SIZE,
+    limit: pageSize,
+    offset,
   });
+  const last = outOfRange(page, total, pageSize);
+  if (last) redirect(pageUrl("/patients", sp, last));
   const today = clinicToday(shell.location.timezone);
   const filterHref = (next: Record<string, string | undefined>) => {
     const q = new URLSearchParams(Object.entries({ q: sp.q, status, species, ...next }).filter((e): e is [string, string] => Boolean(e[1])));
@@ -115,7 +119,7 @@ export default async function PatientsPage({
           ))}
         </ul>
       )}
-      <Pagination page={page} pageSize={PAGE_SIZE} total={total} basePath="/patients" params={{ q: sp.q, status: status === "active" ? undefined : status, species }} />
+      <Pagination page={page} pageSize={pageSize} defaultSize={DEFAULT_SIZE} total={total} basePath="/patients" params={{ q: sp.q, status: status === "active" ? undefined : status, species }} />
     </>
   );
 }

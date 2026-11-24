@@ -1,10 +1,12 @@
 import type { Metadata } from "next";
+import { redirect } from "next/navigation";
 import Link from "next/link";
 import { ClipboardCheck, ClipboardList, PhoneCall } from "lucide-react";
 import { listTasks } from "@vetrix/db/runtime";
 import { EmptyState } from "@/components/patterns/empty-state";
 import { PageHeader } from "@/components/patterns/page-header";
 import { Pagination } from "@/components/patterns/pagination";
+import { outOfRange, pageUrl, readPaging } from "@/lib/paging";
 import { Badge } from "@/components/ui/badge";
 import { requirePage } from "@/features/clients/access";
 import { formatWhen, TASK_TYPE_LABEL } from "@/features/front-desk/labels";
@@ -12,14 +14,17 @@ import { TaskButton } from "@/features/front-desk/task-button";
 import { cn } from "@/lib/utils";
 
 export const metadata: Metadata = { title: "Tasks · Vetrix" };
-const PAGE_SIZE = 50;
+const DEFAULT_SIZE = 50;
 
-export default async function TasksPage({ searchParams }: { searchParams: Promise<{ status?: string; page?: string }> }) {
+export default async function TasksPage({ searchParams }: { searchParams: Promise<{ status?: string; page?: string; size?: string }> }) {
   const shell = await requirePage("tasks.view");
   const sp = await searchParams;
   const status = sp.status === "done" ? "done" : "open";
-  const page = Math.max(1, Number(sp.page) || 1);
-  const { rows, total } = await listTasks(shell.clinic, shell.location.id, { status, limit: PAGE_SIZE, offset: (page - 1) * PAGE_SIZE });
+  const { page, pageSize, offset } = readPaging(sp, { defaultSize: DEFAULT_SIZE });
+  const { rows, total } = await listTasks(shell.clinic, shell.location.id, { status, limit: pageSize, offset });
+  const last = outOfRange(page, total, pageSize);
+  if (last) redirect(pageUrl("/tasks", sp, last));
+
   const tz = shell.location.timezone;
   const canManage = shell.permissions.has("tasks.manage");
   const canCalls = shell.permissions.has("calls.view");
@@ -95,7 +100,7 @@ export default async function TasksPage({ searchParams }: { searchParams: Promis
           ))}
         </ul>
       )}
-      <Pagination page={page} pageSize={PAGE_SIZE} total={total} basePath="/tasks" params={{ status: status === "done" ? "done" : undefined }} />
+      <Pagination page={page} pageSize={pageSize} defaultSize={DEFAULT_SIZE} total={total} basePath="/tasks" params={{ status: status === "done" ? "done" : undefined }} />
     </>
   );
 }

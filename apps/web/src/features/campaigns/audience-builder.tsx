@@ -4,7 +4,7 @@
 // ANY (or), with a live count of who can receive it on each channel. Rules
 // are checked again on the server (validateAudience) when saved and at send.
 import { useEffect, useRef, useState, useTransition } from "react";
-import { AlertCircle, CheckCircle2, Loader2, Plus, Trash2, Users } from "lucide-react";
+import { AlertCircle, CheckCircle2, ChevronLeft, ChevronRight, Loader2, Plus, Trash2, Users } from "lucide-react";
 import { AUDIENCE_CONDITION_LABEL, MAX_AUDIENCE_CONDITIONS, SKIP_REASON_LABEL, type Audience, type AudienceCondition, type CampaignChannel, type SkipReason } from "@vetrix/domain";
 import type { AudiencePreview } from "@vetrix/db/runtime";
 import { Alert } from "@/components/ui/alert";
@@ -12,6 +12,9 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 import { previewAudienceAction, saveAudienceAction } from "./actions";
+
+/** People per page in "See who is included" (matches the server action). */
+const SAMPLE_PAGE = 20;
 
 /** One rule as the form holds it: numbers stay text until the server checks them. */
 type Row = {
@@ -63,6 +66,9 @@ export function AudienceBuilder({
   const [saveState, setSaveState] = useState<{ ok: boolean; text: string } | null>(null);
   const [checking, startCheck] = useTransition();
   const [saving, startSave] = useTransition();
+  // Page of "See who is included" (20 per page); back to the first page when the rules change.
+  const [sampleOffset, setSampleOffset] = useState(0);
+  useEffect(() => setSampleOffset(0), [match, rows]);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Count again shortly after each change.
@@ -70,7 +76,7 @@ export function AudienceBuilder({
     if (timer.current) clearTimeout(timer.current);
     timer.current = setTimeout(() => {
       startCheck(async () => {
-        const r = await previewAudienceAction(campaignId, toRaw(match, rows), channels);
+        const r = await previewAudienceAction(campaignId, toRaw(match, rows), channels, sampleOffset);
         if (r.ok) {
           setPreview(r.preview);
           setProblem(null);
@@ -83,7 +89,7 @@ export function AudienceBuilder({
     return () => {
       if (timer.current) clearTimeout(timer.current);
     };
-  }, [campaignId, match, rows, channels]);
+  }, [campaignId, match, rows, channels, sampleOffset]);
 
   const update = (key: number, change: Partial<Row>) => {
     setSaveState(null);
@@ -231,7 +237,7 @@ export function AudienceBuilder({
             </div>
             {preview.sample.length > 0 && (
               <details className="text-small">
-                <summary className="cursor-pointer font-medium text-primary">See who is included{preview.clients > preview.sample.length ? ` (first ${preview.sample.length})` : ""}</summary>
+                <summary className="cursor-pointer font-medium text-primary">See who is included ({preview.clients})</summary>
                 <ul className="mt-2 grid gap-1">
                   {preview.sample.map((s, i) => (
                     <li key={i} className="flex flex-wrap justify-between gap-x-3 border-t py-1.5">
@@ -242,6 +248,28 @@ export function AudienceBuilder({
                     </li>
                   ))}
                 </ul>
+                {preview.clients > SAMPLE_PAGE && (
+                  <div className="mt-2 flex items-center justify-between gap-2 text-caption text-muted-foreground">
+                    <span aria-live="polite">
+                      Showing {preview.sampleOffset + 1}–{Math.min(preview.sampleOffset + SAMPLE_PAGE, preview.clients)} of {preview.clients}
+                    </span>
+                    <span className="flex gap-1">
+                      <Button type="button" variant="outline" size="sm" aria-label="Previous people" disabled={checking || preview.sampleOffset === 0} onClick={() => setSampleOffset((o) => Math.max(0, o - SAMPLE_PAGE))}>
+                        <ChevronLeft aria-hidden />
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        aria-label="Next people"
+                        disabled={checking || preview.sampleOffset + SAMPLE_PAGE >= preview.clients}
+                        onClick={() => setSampleOffset((o) => o + SAMPLE_PAGE)}
+                      >
+                        <ChevronRight aria-hidden />
+                      </Button>
+                    </span>
+                  </div>
+                )}
               </details>
             )}
             <p className="text-caption text-muted-foreground">Checked again when it sends: consent, do-not-contact and the 7-day limit can change by then.</p>

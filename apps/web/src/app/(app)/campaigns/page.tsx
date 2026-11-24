@@ -1,8 +1,11 @@
 import type { Metadata } from "next";
+import { redirect } from "next/navigation";
 import Link from "next/link";
 import { Megaphone, Plus } from "lucide-react";
 import { listCampaigns } from "@vetrix/db/runtime";
 import { EmptyState } from "@/components/patterns/empty-state";
+import { Pagination } from "@/components/patterns/pagination";
+import { outOfRange, pageUrl, readPaging } from "@/lib/paging";
 import { PageHeader } from "@/components/patterns/page-header";
 import { Button } from "@/components/ui/button";
 import { requirePage } from "@/features/clients/access";
@@ -12,9 +15,13 @@ export const metadata: Metadata = { title: "Campaigns · Vetrix" };
 
 const when = (d: Date) => new Intl.DateTimeFormat("en-US", { day: "numeric", month: "short", year: "numeric" }).format(d);
 
-export default async function CampaignsPage() {
+export default async function CampaignsPage({ searchParams }: { searchParams: Promise<{ page?: string; size?: string }> }) {
   const shell = await requirePage("campaigns.manage");
-  const campaigns = await listCampaigns(shell.clinic, shell.location.id);
+  const sp = await searchParams;
+  const { page, pageSize, offset } = readPaging(sp, { defaultSize: 25 });
+  const { rows: campaigns, total } = await listCampaigns(shell.clinic, shell.location.id, { limit: pageSize, offset });
+  const last = outOfRange(page, total, pageSize);
+  if (last) redirect(pageUrl("/campaigns", sp, last));
   const newButton = (
     <Button asChild variant="outline" className="border-white/30 bg-white text-foreground hover:bg-white/90">
       <Link href="/campaigns/new">
@@ -59,6 +66,7 @@ export default async function CampaignsPage() {
           ))}
         </ul>
       )}
+      <Pagination page={page} pageSize={pageSize} defaultSize={25} total={total} basePath="/campaigns" params={{}} noun="campaigns" />
     </>
   );
 }

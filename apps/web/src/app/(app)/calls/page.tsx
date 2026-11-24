@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { redirect } from "next/navigation";
 import Link from "next/link";
 import { ChevronRight, Moon, PhoneCall, Sparkles } from "lucide-react";
 import { formatPhone, type TriageLevel } from "@vetrix/domain";
@@ -6,28 +7,31 @@ import { aiPersonaName, listCalls } from "@vetrix/db/runtime";
 import { EmptyState } from "@/components/patterns/empty-state";
 import { PageHeader } from "@/components/patterns/page-header";
 import { Pagination } from "@/components/patterns/pagination";
+import { outOfRange, pageUrl, readPaging } from "@/lib/paging";
 import { buttonVariants } from "@/components/ui/button";
 import { requirePage } from "@/features/clients/access";
 import { ChannelIcon, formatWhen, SandboxBadge, TriageBadge } from "@/features/front-desk/labels";
 import { cn } from "@/lib/utils";
 
 export const metadata: Metadata = { title: "Calls · Vetrix" };
-const PAGE_SIZE = 25;
+const DEFAULT_SIZE = 25;
 const FILTERS: { value: TriageLevel | undefined; label: string }[] = [
   { value: undefined, label: "All" },
   { value: "emergency", label: "Emergency" },
   { value: "urgent", label: "Urgent" },
 ];
 
-export default async function CallsPage({ searchParams }: { searchParams: Promise<{ level?: string; page?: string }> }) {
+export default async function CallsPage({ searchParams }: { searchParams: Promise<{ level?: string; page?: string; size?: string }> }) {
   const shell = await requirePage("calls.view");
   const sp = await searchParams;
   const level = sp.level === "emergency" || sp.level === "urgent" ? sp.level : undefined;
-  const page = Math.max(1, Number(sp.page) || 1);
+  const { page, pageSize, offset } = readPaging(sp, { defaultSize: DEFAULT_SIZE });
   const [aiName, { rows, total }] = await Promise.all([
     aiPersonaName(shell.clinic, shell.location.id),
-    listCalls(shell.clinic, shell.location.id, { level, limit: PAGE_SIZE, offset: (page - 1) * PAGE_SIZE }),
+    listCalls(shell.clinic, shell.location.id, { level, limit: pageSize, offset }),
   ]);
+  const last = outOfRange(page, total, pageSize);
+  if (last) redirect(pageUrl("/calls", sp, last));
   const tz = shell.location.timezone;
   const canTry = shell.permissions.has("schedule.manage");
 
@@ -117,7 +121,7 @@ export default async function CallsPage({ searchParams }: { searchParams: Promis
           ))}
         </ul>
       )}
-      <Pagination page={page} pageSize={PAGE_SIZE} total={total} basePath="/calls" params={{ level }} />
+      <Pagination page={page} pageSize={pageSize} defaultSize={DEFAULT_SIZE} total={total} basePath="/calls" params={{ level }} />
     </>
   );
 }
