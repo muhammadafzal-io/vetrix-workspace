@@ -8,6 +8,9 @@ import {
   parseCampaignDraft,
   parseCampaignPlan,
   parseTestRecipients,
+  validateChosenRecipients,
+  limitToChosen,
+  MAX_CHOSEN_RECIPIENTS,
   sandboxCampaignDraft,
   sandboxCampaignPlan,
   selectAudience,
@@ -193,5 +196,24 @@ describe("test sends", () => {
     expect(() => parseTestRecipients("")).toThrow(ValidationError);
     expect(() => parseTestRecipients("not-an-email")).toThrow(ValidationError);
     expect(() => parseTestRecipients("a@x.com b@x.com c@x.com d@x.com e@x.com f@x.com")).toThrow(ValidationError);
+  });
+});
+
+describe("chosen recipients", () => {
+  const a = "11111111-1111-4111-8111-111111111111";
+  const b = "22222222-2222-4222-8222-222222222222";
+  it("reads everyone (null) or a non-empty list of client ids without repeats", () => {
+    expect(validateChosenRecipients("all", [a])).toBeNull();
+    expect(validateChosenRecipients("chosen", [a, a.toUpperCase(), b])).toEqual([a, b]);
+    expect(() => validateChosenRecipients("chosen", [])).toThrow(ValidationError);
+    expect(() => validateChosenRecipients("chosen", ["not-an-id"])).toThrow(ValidationError);
+    expect(() => validateChosenRecipients("some", [a])).toThrow(ValidationError);
+    const many = Array.from({ length: MAX_CHOSEN_RECIPIENTS + 1 }, (_, i) => `00000000-0000-4000-8000-${String(i).padStart(12, "0")}`);
+    expect(() => validateChosenRecipients("chosen", many)).toThrow(ValidationError);
+  });
+  it("keeps only chosen clients who match; null keeps everyone", () => {
+    const matched = new Map([[a, ["Rex"]], [b, ["Tom"]]]);
+    expect(limitToChosen(matched, null)).toBe(matched);
+    expect([...limitToChosen(matched, [b, "33333333-3333-4333-8333-333333333333"]).keys()]).toEqual([b]);
   });
 });

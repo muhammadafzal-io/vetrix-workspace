@@ -15,6 +15,7 @@ import {
   runDueCampaigns,
   saveCampaignAudience,
   saveCampaignContent,
+  saveCampaignRecipients,
   scheduleCampaign,
   unsubscribeByLink,
   unsubscribeLink,
@@ -138,6 +139,42 @@ describe.skipIf(!url)("campaigns on the clinic database", () => {
       expect(rows.rows.find((r) => r.client_id === onePet.client_id)).toMatchObject({ status: "skipped", skip_reason: "pet_not_active" });
       expect(rows.rows.every((r) => r.status !== "pending")).toBe(true);
       expect((await getCampaign(db, loc, id)).status).toBe("sent");
+    }), 300_000);
+
+  it("sends only to the chosen clients who still match; everyone again when set back", () =>
+    withRollback(async (db, loc, today) => {
+      const id = await readyCampaign(db, loc, ["email"]);
+      const everyone = await previewAudience(db, { locationId: loc, audience: dogs, channels: ["email"], today, now: Date.now(), campaignId: id });
+      expect(everyone.matching).toBeGreaterThan(2);
+      const [first, second] = everyone.sample.map((s) => s.clientId);
+      // A cat-only client is chosen too, but does not match "dogs": left out.
+      const catOwner = (await db.query<{ id: string }>(
+        `INSERT INTO clients (location_id, first_name, last_name, mobile, email, sms_consent, marketing_consent, source) VALUES ($1, 'Cat', 'Only', '+15550107777', 'cat.only@example.com', true, true, 'staff') RETURNING id`, [loc],
+      )).rows[0]!.id;
+      await db.query(`INSERT INTO patients (location_id, client_id, name, species, status) VALUES ($1, $2, 'Whiskers', 'cat', 'active')`, [loc, catOwner]);
+
+      await approveCampaign(db, { locationId: loc, id, actor });
+      await saveCampaignRecipients(db, { locationId: loc, id, clientIds: [first!, second!, catOwner], actor });
+      const c = await getCampaign(db, loc, id);
+      expect(c.status).toBe("approved"); // choosing recipients keeps the approval
+      expect(c.recipient_ids?.sort()).toEqual([first, second, catOwner].sort());
+
+      const chosen = await previewAudience(db, { locationId: loc, audience: dogs, channels: ["email"], today, now: Date.now(), campaignId: id, recipientIds: c.recipient_ids });
+      expect(chosen.clients).toBe(2);
+      expect(chosen.matching).toBe(everyone.matching);
+      expect(chosen.sample.filter((s) => s.chosen).map((s) => s.clientId).sort()).toEqual([first, second].sort());
+
+      const now = Date.now();
+      await scheduleCampaign(db, { locationId: loc, id, sendAt: new Date(now), now, actor });
+      await runDueCampaigns(db, { locationId: loc, now, today, sandbox: true, quietHours: false, values });
+      const rows = await db.query<{ client_id: string }>(`SELECT client_id FROM campaign_recipients WHERE campaign_id = $1`, [id]);
+      expect(rows.rows.map((r) => r.client_id).sort()).toEqual([first, second].sort());
+
+      // A client from another location, or none at all, is refused.
+      const other = await readyCampaign(db, loc, ["email"]);
+      await expect(saveCampaignRecipients(db, { locationId: loc, id: other, clientIds: ["00000000-0000-4000-8000-000000000000"], actor })).rejects.toThrow();
+      await saveCampaignRecipients(db, { locationId: loc, id: other, clientIds: null, actor });
+      expect((await getCampaign(db, loc, other)).recipient_ids).toBeNull();
     }), 300_000);
 
   it("does not count simulated messages toward the 7-day limit", () =>

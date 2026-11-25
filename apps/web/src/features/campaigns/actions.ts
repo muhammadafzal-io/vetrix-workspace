@@ -15,6 +15,7 @@ import {
   TEST_SAMPLE,
   validateAudience,
   validateCampaignRequest,
+  validateChosenRecipients,
   ValidationError,
   zonedInstant,
   type Audience, type CampaignChannel, type CopyIssue } from "@vetrix/domain";
@@ -34,6 +35,7 @@ import {
   runDueCampaigns,
   saveCampaignAudience,
   saveCampaignContent,
+  saveCampaignRecipients,
   scheduleCampaign,
   updateCampaignBasics,
   validateCampaignBasics,
@@ -183,6 +185,49 @@ export async function saveAudienceAction(id: string, raw: unknown): Promise<Acti
   }
   refresh(id);
   return { ok: true, message: "Audience saved." };
+}
+
+// ---------- Chosen recipients ----------
+
+/** Rows per page in the recipient picker. */
+const PICK_PAGE = 25;
+
+/** One page of the clients the saved rules match, optionally searched by name. Nothing is saved. */
+export async function recipientChoicesAction(id: string, search: string, offset = 0): Promise<PreviewResult> {
+  try {
+    const { shell } = await allowed();
+    const c = await getCampaign(shell.clinic, shell.location.id, campaignId(id));
+    const preview = await previewAudience(shell.clinic, {
+      locationId: shell.location.id,
+      audience: c.audience,
+      channels: c.channels,
+      today: clinicToday(shell.location.timezone),
+      now: Date.now(),
+      campaignId: id,
+      recipientIds: c.recipient_ids,
+      search: String(search ?? "").slice(0, 100),
+      sampleOffset: Number.isInteger(offset) && offset >= 0 ? offset : 0,
+      sampleLimit: PICK_PAGE,
+    });
+    return { ok: true, preview };
+  } catch (error) {
+    const r = toActionError(error);
+    return { ok: false, error: r.ok ? "Something went wrong." : r.error };
+  }
+}
+
+/** Everyone who matches ("all"), or only the clients ticked ("chosen"). */
+export async function saveRecipientsAction(id: string, mode: "all" | "chosen", clientIds: string[]): Promise<ActionResult> {
+  let chosen: number | null;
+  try {
+    const { shell, actor } = await allowed();
+    const ids = validateChosenRecipients(mode, clientIds);
+    ({ chosen } = await withTransaction(shell.clinic, (tx) => saveCampaignRecipients(tx, { locationId: shell.location.id, id: campaignId(id), clientIds: ids, actor })));
+  } catch (error) {
+    return toActionError(error);
+  }
+  refresh(id);
+  return { ok: true, message: chosen === null ? "It goes to everyone who matches." : `Saved: only the ${chosen} client${chosen === 1 ? "" : "s"} you chose.` };
 }
 
 export type DraftResult =

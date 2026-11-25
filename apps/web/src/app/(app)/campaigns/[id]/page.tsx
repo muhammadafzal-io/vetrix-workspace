@@ -15,6 +15,7 @@ import { updateBasicsAction } from "@/features/campaigns/actions";
 import { AudienceBuilder } from "@/features/campaigns/audience-builder";
 import { BasicsForm } from "@/features/campaigns/basics-form";
 import { ContentEditor } from "@/features/campaigns/content-editor";
+import { RecipientPicker } from "@/features/campaigns/recipient-picker";
 import { SendPanel } from "@/features/campaigns/send-panel";
 import { TestEmailBox } from "@/features/campaigns/test-email";
 import { getSession } from "@/lib/session";
@@ -62,8 +63,8 @@ export default async function CampaignPage({ params, searchParams }: { params: P
 
   let reach = "";
   if (hasAudience && editable) {
-    const p = await previewAudience(shell.clinic, { locationId: loc, audience: c.audience, channels: c.channels, today: clinicToday(shell.location.timezone), now: Date.now(), campaignId: id });
-    reach = `Today it would reach ${c.channels.map((ch) => `${p.perChannel[ch]?.send ?? 0} by ${CHANNEL[ch].toLowerCase()}`).join(" and ")} (of ${p.clients} matching clients).`;
+    const p = await previewAudience(shell.clinic, { locationId: loc, audience: c.audience, channels: c.channels, today: clinicToday(shell.location.timezone), now: Date.now(), campaignId: id, recipientIds: c.recipient_ids });
+    reach = `Today it would reach ${c.channels.map((ch) => `${p.perChannel[ch]?.send ?? 0} by ${CHANNEL[ch].toLowerCase()}`).join(" and ")} (${c.recipient_ids ? `${p.clients} chosen of ${p.matching} matching clients` : `of ${p.clients} matching clients`}).`;
   }
   const results = started ? await campaignResults(shell.clinic, loc, id, { limit: recipientPaging.pageSize, offset: recipientPaging.offset }) : null;
   const lastRecipients = results ? outOfRange(recipientPaging.page, results.recipientsTotal, recipientPaging.pageSize) : null;
@@ -166,6 +167,7 @@ export default async function CampaignPage({ params, searchParams }: { params: P
         <Panel title="4 · Approve and send">
           <div className="grid gap-5">
             {c.channels.includes("email") && <TestEmailBox campaignId={id} defaultTo={session?.user.email ?? ""} ready={Boolean(latest("email"))} />}
+            {hasAudience && <RecipientPicker campaignId={id} savedIds={c.recipient_ids} channels={c.channels} locked={!editable} />}
             <SendPanel campaignId={id} status={c.status} ready={ready} sendAtText={sendAtText} sandbox={sandbox} reach={reach} />
           </div>
         </Panel>

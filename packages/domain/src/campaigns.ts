@@ -538,3 +538,34 @@ export function parseTestRecipients(raw: unknown): string[] {
 
 /** Sample values for a test send, so the email reads as a client would see it. */
 export const TEST_SAMPLE = { client_first_name: "Sam", pet_names: "Bella and Max" } as const;
+
+// ---------- Chosen recipients ----------
+// Staff may send a campaign to only some of the clients who match its rules
+// (decided 25 Nov 2026). null = everyone who matches. A chosen client still
+// has to match the rules when sending starts, and consent, do-not-contact and
+// the 7-day limit are still checked for each message: choosing never overrides
+// a STOP or an unsubscribe.
+
+/** At most this many hand-picked clients per campaign. */
+export const MAX_CHOSEN_RECIPIENTS = 2000;
+
+const CLIENT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** "all" → null; "chosen" → the distinct client ids (at least one). */
+export function validateChosenRecipients(mode: unknown, ids: unknown): string[] | null {
+  if (mode === "all") return null;
+  if (mode !== "chosen") throw new ValidationError("Choose everyone who matches, or only the clients you pick.");
+  if (!Array.isArray(ids)) throw new ValidationError("Choose at least one client.");
+  const list = [...new Set(ids.map((x) => String(x).toLowerCase()))];
+  if (list.some((x) => !CLIENT_ID.test(x))) throw new ValidationError("Choose clients from the list.");
+  if (list.length === 0) throw new ValidationError("Choose at least one client, or send to everyone who matches.");
+  if (list.length > MAX_CHOSEN_RECIPIENTS) throw new ValidationError(`Choose at most ${MAX_CHOSEN_RECIPIENTS.toLocaleString("en-US")} clients, or send to everyone who matches.`);
+  return list;
+}
+
+/** The matching clients a campaign goes to: all of them, or only the chosen ones. */
+export function limitToChosen<T>(selected: Map<string, T>, chosen: readonly string[] | null): Map<string, T> {
+  if (chosen === null) return selected;
+  const keep = new Set(chosen.map((x) => x.toLowerCase()));
+  return new Map([...selected].filter(([clientId]) => keep.has(clientId.toLowerCase())));
+}

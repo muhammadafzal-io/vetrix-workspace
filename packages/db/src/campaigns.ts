@@ -12,6 +12,7 @@ import {
   checkCampaignCopy,
   ConflictError,
   fillCampaignMessage,
+  limitToChosen,
   joinPetNames,
   NotFoundError,
   RuleViolationError,
@@ -38,6 +39,8 @@ export interface CampaignRow {
   audience: Audience;
   channels: CampaignChannel[];
   status: CampaignStatus;
+  /** null = everyone who matches; a list = only these clients. */
+  recipient_ids: string[] | null;
   send_at: Date | null;
   approved_at: Date | null;
   approved_by_name: string | null;
@@ -58,7 +61,7 @@ export interface CampaignContent {
   created_at: Date;
 }
 
-const CAMPAIGN_COLUMNS = `c.id, c.name, c.goal, c.audience, c.channels, c.status, c.send_at, c.approved_at, c.created_at, c.finished_at,
+const CAMPAIGN_COLUMNS = `c.id, c.name, c.goal, c.audience, c.channels, c.status, c.recipient_ids, c.send_at, c.approved_at, c.created_at, c.finished_at,
   su.display_name AS approved_by_name,
   (SELECT count(*) FROM campaign_recipients r WHERE r.campaign_id = c.id AND r.status = 'sent')::int AS sent,
   (SELECT count(*) FROM campaign_recipients r WHERE r.campaign_id = c.id AND r.status = 'skipped')::int AS skipped`;
@@ -90,9 +93,13 @@ export async function getCampaign(db: SqlClient, locationId: string, id: string)
 }
 
 /** Locks the campaign for a change and checks the status move is allowed. */
-async function lockCampaign(db: SqlClient, locationId: string, id: string): Promise<{ status: CampaignStatus; goal: string; channels: CampaignChannel[]; audience: Audience }> {
-  const { rows } = await db.query<{ status: CampaignStatus; goal: string; channels: CampaignChannel[]; audience: Audience }>(
-    `SELECT status, goal, channels, audience FROM campaigns WHERE id = $1 AND location_id = $2 FOR UPDATE`,
+async function lockCampaign(
+  db: SqlClient,
+  locationId: string,
+  id: string,
+): Promise<{ status: CampaignStatus; goal: string; channels: CampaignChannel[]; audience: Audience; recipient_ids: string[] | null }> {
+  const { rows } = await db.query<{ status: CampaignStatus; goal: string; channels: CampaignChannel[]; audience: Audience; recipient_ids: string[] | null }>(
+    `SELECT status, goal, channels, audience, recipient_ids FROM campaigns WHERE id = $1 AND location_id = $2 FOR UPDATE`,
     [id, locationId],
   );
   if (!rows[0]) throw new NotFoundError("Campaign", id);
@@ -151,6 +158,32 @@ export async function saveCampaignAudience(db: SqlClient, input: { locationId: s
   if (c.status !== "draft") await backToDraft(db, input.id);
   await db.query(`UPDATE campaigns SET audience = $2, updated_at = now() WHERE id = $1`, [input.id, JSON.stringify(input.audience)]);
   await writeAudit(db, { locationId: input.locationId, actor: input.actor, action: "campaign.audience", entityType: "campaign", entityId: input.id, changes: { audience: input.audience } });
+}
+
+/**
+ * Everyone who matches (null), or only the clients staff picked. Kept through
+ * approval: approval covers the message, and each picked client must still
+ * match the rules when sending starts. Ids from another location are dropped.
+ */
+export async function saveCampaignRecipients(db: SqlClient, input: { locationId: string; id: string; clientIds: string[] | null; actor: Actor }): Promise<{ chosen: number | null }> {
+  const c = await lockCampaign(db, input.locationId, input.id);
+  editable(c.status);
+  let ids: string[] | null = null;
+  if (input.clientIds) {
+    const { rows } = await db.query<{ id: string }>(`SELECT id FROM clients WHERE location_id = $1 AND id = ANY($2::uuid[])`, [input.locationId, input.clientIds]);
+    ids = rows.map((r) => r.id);
+    if (ids.length === 0) throw new ValidationError("Choose at least one client, or send to everyone who matches.");
+  }
+  await db.query(`UPDATE campaigns SET recipient_ids = $2, updated_at = now() WHERE id = $1`, [input.id, ids]);
+  await writeAudit(db, {
+    locationId: input.locationId,
+    actor: input.actor,
+    action: "campaign.recipients",
+    entityType: "campaign",
+    entityId: input.id,
+    changes: ids ? { mode: "chosen", clients: ids.length } : { mode: "all" },
+  });
+  return { chosen: ids?.length ?? null };
 }
 
 // ---------- Audience ----------
@@ -223,43 +256,68 @@ async function loadAudienceData(db: SqlClient, locationId: string, today: string
 }
 
 export interface AudiencePreview {
+  /** Clients the campaign goes to: everyone matching, or the chosen ones who match. */
   clients: number;
+  /** Clients the rules match, before any hand-picking. */
+  matching: number;
   pets: number;
   perChannel: Partial<Record<CampaignChannel, { send: number; skipped: Partial<Record<SkipReason, number>> }>>;
   /** One page of who is included, by client name. */
-  sample: { clientName: string; petNames: string; channels: Partial<Record<CampaignChannel, SkipReason | null>> }[];
+  sample: { clientId: string; clientName: string; petNames: string; chosen: boolean; channels: Partial<Record<CampaignChannel, SkipReason | null>> }[];
   sampleOffset: number;
+  /** Rows the sample pages through (all matching clients, narrowed by the search). */
+  sampleTotal: number;
 }
 
 /** Who the rules select today and who could actually receive it on each channel. */
 export async function previewAudience(
   db: SqlClient,
-  input: { locationId: string; audience: Audience; channels: CampaignChannel[]; today: string; now: number; campaignId?: string; sampleOffset?: number; sampleLimit?: number },
+  input: {
+    locationId: string;
+    audience: Audience;
+    channels: CampaignChannel[];
+    today: string;
+    now: number;
+    campaignId?: string;
+    sampleOffset?: number;
+    sampleLimit?: number;
+    /** Counts only these clients (null or absent = everyone who matches). The sample still lists every match. */
+    recipientIds?: string[] | null;
+    /** Narrows the sample by client or pet name. */
+    search?: string;
+  },
 ): Promise<AudiencePreview> {
   const data = await loadAudienceData(db, input.locationId, input.today, input.campaignId);
   const selected = selectAudience(input.audience, data.pets, input.today);
+  const chosen = limitToChosen(selected, input.recipientIds ?? null);
   const sampleOffset = Math.max(input.sampleOffset ?? 0, 0);
   const sampleLimit = Math.min(Math.max(input.sampleLimit ?? 20, 1), 100);
-  const preview: AudiencePreview = { clients: selected.size, pets: 0, perChannel: {}, sample: [], sampleOffset };
+  const search = (input.search ?? "").trim().toLowerCase().slice(0, 100);
+  const preview: AudiencePreview = { clients: chosen.size, matching: selected.size, pets: 0, perChannel: {}, sample: [], sampleOffset, sampleTotal: 0 };
   // By client name, so pages of "who is included" are stable.
   const ordered = [...selected].sort(([a], [b]) => (data.clients.get(a)?.name ?? "").localeCompare(data.clients.get(b)?.name ?? "") || a.localeCompare(b));
   let index = 0;
   for (const ch of input.channels) preview.perChannel[ch] = { send: 0, skipped: {} };
   for (const [clientId, pets] of ordered) {
-    preview.pets += pets.length;
     const client = data.clients.get(clientId);
     if (!client) continue;
-    const row: AudiencePreview["sample"][number] = { clientName: client.name, petNames: joinPetNames(pets.map((p) => p.name)), channels: {} };
+    const isChosen = chosen.has(clientId);
+    const petNames = joinPetNames(pets.map((p) => p.name));
+    const row: AudiencePreview["sample"][number] = { clientId, clientName: client.name, petNames, chosen: isChosen, channels: {} };
+    if (isChosen) preview.pets += pets.length;
     for (const ch of input.channels) {
       const why = campaignEligibility(client, ch, input.now);
       row.channels[ch] = why;
+      if (!isChosen) continue;
       const bucket = preview.perChannel[ch]!;
       if (why) bucket.skipped[why] = (bucket.skipped[why] ?? 0) + 1;
       else bucket.send += 1;
     }
+    if (search && !`${client.name} ${petNames}`.toLowerCase().includes(search)) continue;
     if (index >= sampleOffset && index < sampleOffset + sampleLimit) preview.sample.push(row);
     index += 1;
   }
+  preview.sampleTotal = index;
   return preview;
 }
 
@@ -337,6 +395,7 @@ export async function approveCampaign(db: SqlClient, input: { locationId: string
 export async function scheduleCampaign(db: SqlClient, input: { locationId: string; id: string; sendAt: Date; now: number; actor: Actor }): Promise<void> {
   const c = await lockCampaign(db, input.locationId, input.id);
   if (!canChangeCampaign(c.status, "scheduled")) throw new RuleViolationError("campaign.status", "Approve the campaign before sending it.");
+  if (c.recipient_ids && c.recipient_ids.length === 0) throw new RuleViolationError("campaign.recipients", "Choose at least one client, or send to everyone who matches.");
   if (input.sendAt.getTime() < input.now - 60_000 || input.sendAt.getTime() > input.now + 90 * 86_400_000) {
     throw new ValidationError("Choose a time from now up to 90 days ahead.", { field: "sendAt" });
   }
@@ -394,7 +453,7 @@ async function loadCampaignClients(db: SqlClient, clientIds: string[], campaignI
  * still sending.
  *
  * 1. When a campaign starts, its audience is fixed: one 'pending' row per
- *    matching client and channel, with the pets it is about. Clients who
+ *    matching client (or matching chosen client) and channel, with the pets it is about. Clients who
  *    match later are not added (decided 24 Nov 2026).
  * 2. Each run works through the pending rows. Consent, do-not-contact, the
  *    7-day limit and the pets still being active are checked again as each
@@ -417,8 +476,8 @@ export async function runDueCampaigns(
   },
 ): Promise<{ campaigns: number; sent: number; skipped: number; finished: number }> {
   const result = { campaigns: 0, sent: 0, skipped: 0, finished: 0 };
-  const { rows: due } = await db.query<{ id: string; status: CampaignStatus; audience: Audience; channels: CampaignChannel[]; audience_fixed_at: Date | null }>(
-    `SELECT id, status, audience, channels, audience_fixed_at FROM campaigns
+  const { rows: due } = await db.query<{ id: string; status: CampaignStatus; audience: Audience; channels: CampaignChannel[]; recipient_ids: string[] | null; audience_fixed_at: Date | null }>(
+    `SELECT id, status, audience, channels, recipient_ids, audience_fixed_at FROM campaigns
      WHERE location_id = $1 AND (status = 'sending' OR (status = 'scheduled' AND send_at <= $2))
        AND ($3::uuid IS NULL OR id = $3::uuid)
      ORDER BY send_at FOR UPDATE SKIP LOCKED`,
@@ -437,7 +496,8 @@ export async function runDueCampaigns(
     //    rule existed) stay as they are.
     if (!c.audience_fixed_at) {
       const data = await loadAudienceData(db, input.locationId, input.today, c.id);
-      const selected = [...selectAudience(c.audience, data.pets, input.today)];
+      // Everyone who matches, or only the clients staff picked (if they still match).
+      const selected = [...limitToChosen(selectAudience(c.audience, data.pets, input.today), c.recipient_ids)];
       const snap = selected.flatMap(([clientId, pets]) => c.channels.map((channel) => ({ clientId, channel, petIds: pets.map((p) => p.id), petNames: joinPetNames(pets.map((p) => p.name)) })));
       if (snap.length) {
         await db.query(
