@@ -8,6 +8,17 @@
 import { ValidationError } from "./errors";
 
 export const CAMPAIGN_CHANNELS = ["sms", "email"] as const;
+
+/**
+ * Marketing (offers, "book your dental") or a clinic announcement (service
+ * news: closures, new hours, a notice), decided 25 Nov 2026. Announcements
+ * need no marketing consent, skip the 7-day limit and carry no unsubscribe
+ * link, so they must not promote anything (checkCampaignCopy refuses it).
+ * Do-not-contact, an email address and text consent (STOP) still apply.
+ */
+export const CAMPAIGN_KINDS = ["marketing", "announcement"] as const;
+export type CampaignKind = (typeof CAMPAIGN_KINDS)[number];
+export const CAMPAIGN_KIND_LABEL: Record<CampaignKind, string> = { marketing: "Marketing", announcement: "Clinic announcement" };
 export type CampaignChannel = (typeof CAMPAIGN_CHANNELS)[number];
 export type CampaignStatus = "draft" | "approved" | "scheduled" | "sending" | "sent" | "cancelled";
 
@@ -195,13 +206,17 @@ export const SKIP_REASON_LABEL: Record<SkipReason, string> = {
   pet_not_active: "Pet no longer active",
 };
 
-/** Whether this client may get this campaign on this channel now, or why not. */
-export function campaignEligibility(client: CampaignClient, channel: CampaignChannel, now: number): SkipReason | null {
+/**
+ * Whether this client may get this campaign on this channel now, or why not.
+ * An announcement skips marketing consent and the 7-day limit (it is not
+ * marketing); do-not-contact, text consent and an email address always apply.
+ */
+export function campaignEligibility(client: CampaignClient, channel: CampaignChannel, now: number, kind: CampaignKind = "marketing"): SkipReason | null {
   if (client.flags.includes("do_not_contact")) return "do_not_contact";
-  if (!client.marketingConsent) return "no_marketing_consent";
+  if (kind === "marketing" && !client.marketingConsent) return "no_marketing_consent";
   if (channel === "sms" && !client.smsConsent) return "no_sms_consent";
   if (channel === "email" && !client.email) return "no_email";
-  if (client.lastCampaignAt && now - client.lastCampaignAt.getTime() < CAMPAIGN_FREQUENCY_DAYS * DAY) return "contacted_recently";
+  if (kind === "marketing" && client.lastCampaignAt && now - client.lastCampaignAt.getTime() < CAMPAIGN_FREQUENCY_DAYS * DAY) return "contacted_recently";
   return null;
 }
 
@@ -235,10 +250,13 @@ const DATE_RE = new RegExp(`\\b(?:(?:${MONTHS})\\.?\\s+\\d{1,2}(?:st|nd|rd|th)?|
 /** Promises a clinic must not make in marketing. */
 const CLAIMS = /\b(?:guarantee[ds]?|cures?|cured|risk[- ]free|100\s?% (?:safe|effective)|miracle|never get sick|prevents? all)\b/gi;
 
+/** Words that make a message an offer: an announcement may not contain them. */
+const PROMOTION = /\b(?:discount(?:s|ed)?|\d+(?:\.\d+)?\s?% off|\$\s?\d[\d,]*(?:\.\d{2})? off|sale|special offers?|limited[- ]time|promo(?:tion|tional)?s?|promo code|coupons?|deals?|bogo|buy one|half price|save (?:up to )?\$?\d|(?<!feel )free (?:exam|check-?up|consult(?:ation)?|visit|nail trim|gift|dental|vaccine)s?|complimentary)\b/gi;
+
 const squash = (s: string) => s.toLowerCase().replace(/[\s,]/g, "");
 
 export interface CopyIssue {
-  kind: "fact" | "placeholder" | "claim" | "term" | "length" | "empty";
+  kind: "fact" | "placeholder" | "claim" | "term" | "length" | "empty" | "promotion";
   text: string;
 }
 
@@ -249,7 +267,7 @@ export interface CopyIssue {
  * promises or forbidden terms, and within the length for the channel.
  */
 export function checkCampaignCopy(
-  input: { channel: CampaignChannel; subject?: string | null; body: string },
+  input: { channel: CampaignChannel; subject?: string | null; body: string; kind?: CampaignKind },
   facts: string,
   forbiddenTerms: readonly string[] = [],
 ): CopyIssue[] {
@@ -266,6 +284,11 @@ export function checkCampaignCopy(
   }
   for (const m of text.matchAll(PLACEHOLDER)) {
     if (!(CAMPAIGN_PLACEHOLDERS as readonly string[]).includes(m[1]!)) issues.push({ kind: "placeholder", text: `{{${m[1]}}} is not a known placeholder.` });
+  }
+  if (input.kind === "announcement") {
+    for (const m of text.replace(PLACEHOLDER, " ").matchAll(PROMOTION)) {
+      issues.push({ kind: "promotion", text: `"${m[0]}" is an offer. Announcements can't promote; make this a Marketing campaign.` });
+    }
   }
   for (const m of text.matchAll(CLAIMS)) issues.push({ kind: "claim", text: `"${m[0]}" is a promise the clinic should not make.` });
   const lower = text.toLowerCase();
@@ -293,6 +316,8 @@ export function joinPetNames(names: string[]): string {
 // ---------- AI drafts ----------
 
 export interface CampaignDraftRequest {
+  /** Marketing when absent. */
+  kind?: CampaignKind;
   goal: string;
   clinicName: string;
   clinicFacts: string;
@@ -320,14 +345,19 @@ export const CAMPAIGN_DRAFT_SCHEMA = {
 } as const;
 
 export function buildCampaignPrompt(req: CampaignDraftRequest): { system: string; user: string } {
+  const announcement = req.kind === "announcement";
   const system = [
-    `You write short, warm marketing messages for ${req.clinicName}, a veterinary clinic, to its existing clients.`,
+    announcement
+      ? `You write short, clear service announcements (closures, hours, clinic news, notices) for ${req.clinicName}, a veterinary clinic, to its existing clients. Never promote anything: no offers, discounts, sales, deals, free services or calls to buy.`
+      : `You write short, warm marketing messages for ${req.clinicName}, a veterinary clinic, to its existing clients.`,
     "Use only facts from the goal and the clinic details. Do not invent prices, discounts, dates, times, phone numbers, links or services.",
     "No medical claims or promises (no 'guaranteed', 'cures', 'risk-free'). No emojis, no markdown.",
     "Write to one owner about their own pet. Never describe who the campaign targets (no 'this is for dogs over 8 not seen in 6 months').",
     `You may use these placeholders: ${CAMPAIGN_PLACEHOLDERS.map((p) => `{{${p}}}`).join(", ")}. Use {{booking_link}} for booking; never write a link yourself.`,
     `Text message: at most ${CAMPAIGN_SMS_MAX - SMS_OPT_OUT.length - 20} characters, start with the clinic name, do not add an opt-out line (it is added for you).`,
-    "Email: a clear subject (under 70 characters) and a body of 2 to 4 short paragraphs, signed by the clinic team. Do not add an unsubscribe line (it is added for you).",
+    announcement
+      ? "Email: a clear subject (under 70 characters) and a body of 1 to 3 short paragraphs, signed by the clinic team."
+      : "Email: a clear subject (under 70 characters) and a body of 2 to 4 short paragraphs, signed by the clinic team. Do not add an unsubscribe line (it is added for you).",
     req.channels.length < 2 ? `Only the ${req.channels[0] === "sms" ? "text message" : "email"} is needed; return an empty string for the other.` : "",
     'Reply as JSON: {"sms": "...", "email_subject": "...", "email_body": "..."}',
   ]
@@ -365,9 +395,17 @@ export function parseCampaignDraft(raw: string | null, channels: CampaignChannel
 }
 
 /** Without an AI key: a plain draft built from the goal, labelled Sandbox in the app. */
-export function sandboxCampaignDraft(req: Pick<CampaignDraftRequest, "goal" | "clinicName" | "channels">): CampaignDraft {
+export function sandboxCampaignDraft(req: Pick<CampaignDraftRequest, "goal" | "clinicName" | "channels" | "kind">): CampaignDraft {
   const goal = req.goal.trim().replace(/\s+/g, " ").replace(/[.!]*$/, ".");
   const short = goal.length > 150 ? `${goal.slice(0, 147).replace(/\s+\S*$/, "")}…` : goal;
+  if (req.kind === "announcement") {
+    return {
+      ...(req.channels.includes("sms") ? { sms: `{{clinic_name}}: Hi {{client_first_name}}, ${short} Questions? Call {{clinic_phone}}.` } : {}),
+      ...(req.channels.includes("email")
+        ? { emailSubject: `News from {{clinic_name}}`, emailBody: `Hi {{client_first_name}},\n\n${goal}\n\nQuestions? Call us at {{clinic_phone}}.\n\nThe team at {{clinic_name}}` }
+        : {}),
+    };
+  }
   return {
     ...(req.channels.includes("sms") ? { sms: `{{clinic_name}}: Hi {{client_first_name}}, ${short} Book for {{pet_names}}: {{booking_link}}` } : {}),
     ...(req.channels.includes("email")

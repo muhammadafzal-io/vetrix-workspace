@@ -21,6 +21,7 @@ import {
   type Audience,
   type AudiencePet,
   type CampaignChannel,
+  type CampaignKind,
   type CampaignClient,
   type CampaignStatus,
   type CopyIssue,
@@ -35,6 +36,7 @@ const staffId = (a: Actor) => (a.type === "staff" ? a.id : null);
 export interface CampaignRow {
   id: string;
   name: string;
+  kind: CampaignKind;
   goal: string;
   audience: Audience;
   channels: CampaignChannel[];
@@ -61,7 +63,7 @@ export interface CampaignContent {
   created_at: Date;
 }
 
-const CAMPAIGN_COLUMNS = `c.id, c.name, c.goal, c.audience, c.channels, c.status, c.recipient_ids, c.send_at, c.approved_at, c.created_at, c.finished_at,
+const CAMPAIGN_COLUMNS = `c.id, c.name, c.kind, c.goal, c.audience, c.channels, c.status, c.recipient_ids, c.send_at, c.approved_at, c.created_at, c.finished_at,
   su.display_name AS approved_by_name,
   (SELECT count(*) FROM campaign_recipients r WHERE r.campaign_id = c.id AND r.status = 'sent')::int AS sent,
   (SELECT count(*) FROM campaign_recipients r WHERE r.campaign_id = c.id AND r.status = 'skipped')::int AS skipped`;
@@ -97,9 +99,9 @@ async function lockCampaign(
   db: SqlClient,
   locationId: string,
   id: string,
-): Promise<{ status: CampaignStatus; goal: string; channels: CampaignChannel[]; audience: Audience; recipient_ids: string[] | null }> {
-  const { rows } = await db.query<{ status: CampaignStatus; goal: string; channels: CampaignChannel[]; audience: Audience; recipient_ids: string[] | null }>(
-    `SELECT status, goal, channels, audience, recipient_ids FROM campaigns WHERE id = $1 AND location_id = $2 FOR UPDATE`,
+): Promise<{ status: CampaignStatus; kind: CampaignKind; goal: string; channels: CampaignChannel[]; audience: Audience; recipient_ids: string[] | null }> {
+  const { rows } = await db.query<{ status: CampaignStatus; kind: CampaignKind; goal: string; channels: CampaignChannel[]; audience: Audience; recipient_ids: string[] | null }>(
+    `SELECT status, kind, goal, channels, audience, recipient_ids FROM campaigns WHERE id = $1 AND location_id = $2 FOR UPDATE`,
     [id, locationId],
   );
   if (!rows[0]) throw new NotFoundError("Campaign", id);
@@ -119,6 +121,7 @@ async function backToDraft(db: SqlClient, id: string) {
 }
 
 export interface CampaignBasics {
+  kind: CampaignKind;
   name: string;
   goal: string;
   channels: CampaignChannel[];
@@ -131,13 +134,15 @@ export function validateCampaignBasics(raw: Record<string, unknown>): CampaignBa
   if (!name || name.length > 120) throw new ValidationError("Give the campaign a short name.", { field: "name" });
   if (goal.length < 10 || goal.length > 1000) throw new ValidationError("Describe the goal in a sentence or two: what you offer and to whom (10 to 1,000 characters).", { field: "goal" });
   if (channels.length === 0) throw new ValidationError("Choose text, email or both.", { field: "channels" });
-  return { name, goal, channels };
+  const kind = raw.kind === undefined || raw.kind === "" ? "marketing" : raw.kind;
+  if (kind !== "marketing" && kind !== "announcement") throw new ValidationError("Choose marketing or clinic announcement.", { field: "kind" });
+  return { kind, name, goal, channels };
 }
 
 export async function createCampaign(db: SqlClient, input: { locationId: string; basics: CampaignBasics; actor: Actor }): Promise<string> {
   const { rows } = await db.query<{ id: string }>(
-    `INSERT INTO campaigns (location_id, name, goal, channels, created_by) VALUES ($1, $2, $3, $4, $5) RETURNING id`,
-    [input.locationId, input.basics.name, input.basics.goal, input.basics.channels, staffId(input.actor)],
+    `INSERT INTO campaigns (location_id, kind, name, goal, channels, created_by) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+    [input.locationId, input.basics.kind, input.basics.name, input.basics.goal, input.basics.channels, staffId(input.actor)],
   );
   const id = rows[0]!.id;
   await writeAudit(db, { locationId: input.locationId, actor: input.actor, action: "campaign.created", entityType: "campaign", entityId: id, changes: { ...input.basics } });
@@ -148,7 +153,7 @@ export async function updateCampaignBasics(db: SqlClient, input: { locationId: s
   const c = await lockCampaign(db, input.locationId, input.id);
   editable(c.status);
   if (c.status !== "draft") await backToDraft(db, input.id);
-  await db.query(`UPDATE campaigns SET name = $2, goal = $3, channels = $4, updated_at = now() WHERE id = $1`, [input.id, input.basics.name, input.basics.goal, input.basics.channels]);
+  await db.query(`UPDATE campaigns SET kind = $5, name = $2, goal = $3, channels = $4, updated_at = now() WHERE id = $1`, [input.id, input.basics.name, input.basics.goal, input.basics.channels, input.basics.kind]);
   await writeAudit(db, { locationId: input.locationId, actor: input.actor, action: "campaign.updated", entityType: "campaign", entityId: input.id, changes: { ...input.basics } });
 }
 
@@ -230,7 +235,9 @@ async function loadAudienceData(db: SqlClient, locationId: string, today: string
               coalesce((SELECT array_agg(f.flag) FROM client_flags f WHERE f.client_id = c.id), '{}') AS flags,
               (SELECT max(r.created_at) FROM campaign_recipients r WHERE r.client_id = c.id AND r.status = 'sent' AND r.campaign_id IS DISTINCT FROM $2::uuid
                  -- A simulated message (sandbox, or not on the test allowlist) never reached the client.
-                 AND EXISTS (SELECT 1 FROM messages m WHERE m.id = r.message_id AND m.status <> 'simulated')) AS last_campaign_at
+                 AND EXISTS (SELECT 1 FROM messages m WHERE m.id = r.message_id AND m.status <> 'simulated')
+                 -- Announcements are not marketing: they never count toward the 7-day limit.
+                 AND EXISTS (SELECT 1 FROM campaigns k WHERE k.id = r.campaign_id AND k.kind = 'marketing')) AS last_campaign_at
        FROM clients c WHERE c.location_id = $1`,
       [locationId, excludeCampaignId ?? null],
     ),
@@ -285,6 +292,8 @@ export async function previewAudience(
     recipientIds?: string[] | null;
     /** Narrows the sample by client or pet name. */
     search?: string;
+    /** Marketing when absent: announcements skip marketing consent and the 7-day limit. */
+    kind?: CampaignKind;
   },
 ): Promise<AudiencePreview> {
   const data = await loadAudienceData(db, input.locationId, input.today, input.campaignId);
@@ -306,7 +315,7 @@ export async function previewAudience(
     const row: AudiencePreview["sample"][number] = { clientId, clientName: client.name, petNames, chosen: isChosen, channels: {} };
     if (isChosen) preview.pets += pets.length;
     for (const ch of input.channels) {
-      const why = campaignEligibility(client, ch, input.now);
+      const why = campaignEligibility(client, ch, input.now, input.kind ?? "marketing");
       row.channels[ch] = why;
       if (!isChosen) continue;
       const bucket = preview.perChannel[ch]!;
@@ -363,7 +372,7 @@ export async function saveCampaignContent(
     [input.id, input.channel, input.source, subject, body, staffId(input.actor)],
   );
   const { facts } = await campaignFacts(db, input.locationId, c.goal);
-  return { version: rows[0]!.version, issues: checkCampaignCopy({ channel: input.channel, subject, body }, facts, forbiddenCampaignTerms()) };
+  return { version: rows[0]!.version, issues: checkCampaignCopy({ channel: input.channel, subject, body, kind: c.kind }, facts, forbiddenCampaignTerms()) };
 }
 
 /**
@@ -382,7 +391,7 @@ export async function approveCampaign(db: SqlClient, input: { locationId: string
   for (const ch of c.channels) {
     const content = latest.rows.find((r) => r.channel === ch);
     if (!content) throw new RuleViolationError("campaign.content", `Write the ${ch === "sms" ? "text message" : "email"} first.`);
-    const issues = checkCampaignCopy({ channel: ch, subject: content.subject, body: content.body }, facts, forbiddenCampaignTerms());
+    const issues = checkCampaignCopy({ channel: ch, subject: content.subject, body: content.body, kind: c.kind }, facts, forbiddenCampaignTerms());
     if (issues.length) throw new RuleViolationError("campaign.copy", `Fix the ${ch === "sms" ? "text message" : "email"} first: ${issues[0]!.text}`);
   }
   const ids = latest.rows.filter((r) => c.channels.includes(r.channel)).map((r) => r.id);
@@ -439,7 +448,9 @@ async function loadCampaignClients(db: SqlClient, clientIds: string[], campaignI
     `SELECT c.id, c.first_name, c.marketing_consent, c.sms_consent, c.email,
             coalesce((SELECT array_agg(f.flag) FROM client_flags f WHERE f.client_id = c.id), '{}') AS flags,
             (SELECT max(r.created_at) FROM campaign_recipients r WHERE r.client_id = c.id AND r.status = 'sent' AND r.campaign_id <> $2
-               AND EXISTS (SELECT 1 FROM messages m WHERE m.id = r.message_id AND m.status <> 'simulated')) AS last_campaign_at
+               AND EXISTS (SELECT 1 FROM messages m WHERE m.id = r.message_id AND m.status <> 'simulated')
+                 -- Announcements are not marketing: they never count toward the 7-day limit.
+                 AND EXISTS (SELECT 1 FROM campaigns k WHERE k.id = r.campaign_id AND k.kind = 'marketing')) AS last_campaign_at
      FROM clients c WHERE c.id = ANY($1::uuid[])`,
     [clientIds, campaignId],
   );
@@ -476,8 +487,8 @@ export async function runDueCampaigns(
   },
 ): Promise<{ campaigns: number; sent: number; skipped: number; finished: number }> {
   const result = { campaigns: 0, sent: 0, skipped: 0, finished: 0 };
-  const { rows: due } = await db.query<{ id: string; status: CampaignStatus; audience: Audience; channels: CampaignChannel[]; recipient_ids: string[] | null; audience_fixed_at: Date | null }>(
-    `SELECT id, status, audience, channels, recipient_ids, audience_fixed_at FROM campaigns
+  const { rows: due } = await db.query<{ id: string; status: CampaignStatus; kind: CampaignKind; audience: Audience; channels: CampaignChannel[]; recipient_ids: string[] | null; audience_fixed_at: Date | null }>(
+    `SELECT id, status, kind, audience, channels, recipient_ids, audience_fixed_at FROM campaigns
      WHERE location_id = $1 AND (status = 'sending' OR (status = 'scheduled' AND send_at <= $2))
        AND ($3::uuid IS NULL OR id = $3::uuid)
      ORDER BY send_at FOR UPDATE SKIP LOCKED`,
@@ -540,7 +551,7 @@ export async function runDueCampaigns(
       }
       const client = clients.get(r.client_id);
       const pets = r.pet_ids.map((id) => activePets.get(id)).filter((n): n is string => Boolean(n));
-      const reason: SkipReason | null = !client ? "do_not_contact" : pets.length === 0 ? "pet_not_active" : campaignEligibility(client, r.channel, input.now);
+      const reason: SkipReason | null = !client ? "do_not_contact" : pets.length === 0 ? "pet_not_active" : campaignEligibility(client, r.channel, input.now, c.kind);
       if (reason) {
         skipped.push({ id: r.id, reason });
         continue;
@@ -551,7 +562,8 @@ export async function runDueCampaigns(
       }
       const msg = approved.get(r.channel);
       if (!msg) throw new RuleViolationError("campaign.content", "The campaign has no approved message for this channel.");
-      const token = r.channel === "email" ? randomBytes(24).toString("base64url") : null;
+      // Only marketing emails carry an unsubscribe link; announcements are service messages.
+      const token = r.channel === "email" && c.kind === "marketing" ? randomBytes(24).toString("base64url") : null;
       const petNames = joinPetNames(pets);
       const values = {
         client_first_name: client!.firstName,
@@ -571,10 +583,10 @@ export async function runDueCampaigns(
     if (messages.length) {
       await db.query(
         `INSERT INTO messages (id, location_id, client_id, channel, template_key, subject, body, status, sent_at)
-         SELECT u.id, $1, u.client_id, u.channel, 'campaign', u.subject, u.body, $2, $3
+         SELECT u.id, $1, u.client_id, u.channel, $9, u.subject, u.body, $2, $3
          FROM unnest($4::uuid[], $5::uuid[], $6::text[], $7::text[], $8::text[]) AS u(id, client_id, channel, subject, body)`,
         [input.locationId, input.sandbox ? "simulated" : "queued", input.sandbox ? new Date(input.now) : null,
-         messages.map((m) => m.id), messages.map((m) => m.clientId), messages.map((m) => m.channel), messages.map((m) => m.subject), messages.map((m) => m.body)],
+         messages.map((m) => m.id), messages.map((m) => m.clientId), messages.map((m) => m.channel), messages.map((m) => m.subject), messages.map((m) => m.body), c.kind === "announcement" ? "announcement" : "campaign"],
       );
       // created_at marks when the client was messaged (the 7-day limit reads it).
       await db.query(

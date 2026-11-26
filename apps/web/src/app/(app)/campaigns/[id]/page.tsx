@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import { redirect } from "next/navigation";
 import Link from "next/link";
 import { ArrowLeft, Sparkles } from "lucide-react";
-import { checkCampaignCopy, describeAudience, SKIP_REASON_LABEL, type CampaignChannel, type CopyIssue, type SkipReason } from "@vetrix/domain";
+import { CAMPAIGN_KIND_LABEL, checkCampaignCopy, describeAudience, SKIP_REASON_LABEL, type CampaignChannel, type CopyIssue, type SkipReason } from "@vetrix/domain";
 import { audienceOptions, campaignFacts, campaignResults, forbiddenCampaignTerms, getCampaign, previewAudience } from "@vetrix/db/runtime";
 import { Panel } from "@/components/patterns/detail-list";
 import { PageHeader } from "@/components/patterns/page-header";
@@ -50,7 +50,7 @@ export default async function CampaignPage({ params, searchParams }: { params: P
   const issues: Partial<Record<CampaignChannel, CopyIssue[]>> = {};
   for (const ch of c.channels) {
     const v = latest(ch);
-    if (v) issues[ch] = checkCampaignCopy({ channel: ch, subject: v.subject, body: v.body }, facts.facts, forbiddenCampaignTerms());
+    if (v) issues[ch] = checkCampaignCopy({ channel: ch, subject: v.subject, body: v.body, kind: c.kind }, facts.facts, forbiddenCampaignTerms());
   }
   const hasAudience = c.audience.conditions.length > 0;
   const ready = !hasAudience
@@ -63,7 +63,7 @@ export default async function CampaignPage({ params, searchParams }: { params: P
 
   let reach = "";
   if (hasAudience && editable) {
-    const p = await previewAudience(shell.clinic, { locationId: loc, audience: c.audience, channels: c.channels, today: clinicToday(shell.location.timezone), now: Date.now(), campaignId: id, recipientIds: c.recipient_ids });
+    const p = await previewAudience(shell.clinic, { locationId: loc, audience: c.audience, channels: c.channels, today: clinicToday(shell.location.timezone), now: Date.now(), campaignId: id, recipientIds: c.recipient_ids, kind: c.kind });
     reach = `Today it would reach ${c.channels.map((ch) => `${p.perChannel[ch]?.send ?? 0} by ${CHANNEL[ch].toLowerCase()}`).join(" and ")} (${c.recipient_ids ? `${p.clients} chosen of ${p.matching} matching clients` : `of ${p.clients} matching clients`}).`;
   }
   const results = started ? await campaignResults(shell.clinic, loc, id, { limit: recipientPaging.pageSize, offset: recipientPaging.offset }) : null;
@@ -78,7 +78,7 @@ export default async function CampaignPage({ params, searchParams }: { params: P
       <Link href="/campaigns" className="mb-3 inline-flex items-center gap-1.5 text-small font-medium text-muted-foreground hover:text-foreground">
         <ArrowLeft className="size-4" aria-hidden /> Campaigns
       </Link>
-      <PageHeader title={c.name} description={<span className="flex flex-wrap items-center gap-2"><CampaignStatusBadge status={c.status} />{c.approved_by_name && c.status !== "draft" ? `Approved by ${c.approved_by_name}` : null}</span>} />
+      <PageHeader title={c.name} description={<span className="flex flex-wrap items-center gap-2"><CampaignStatusBadge status={c.status} /><Badge variant="muted">{CAMPAIGN_KIND_LABEL[c.kind]}</Badge>{c.approved_by_name && c.status !== "draft" ? `Approved by ${c.approved_by_name}` : null}</span>} />
 
       <div className="grid max-w-4xl gap-6">
         {(built === "ai" || built === "sandbox") && c.status === "draft" && (
@@ -143,7 +143,7 @@ export default async function CampaignPage({ params, searchParams }: { params: P
         )}
 
         <Panel title="1 · Goal">
-          <BasicsForm action={updateBasicsAction.bind(null, id)} saved={{ name: c.name, goal: c.goal, channels: c.channels }} submitLabel="Save" locked={!editable} />
+          <BasicsForm action={updateBasicsAction.bind(null, id)} saved={{ kind: c.kind, name: c.name, goal: c.goal, channels: c.channels }} submitLabel="Save" locked={!editable} />
         </Panel>
 
         <Panel title="2 · Who gets it">
@@ -154,6 +154,7 @@ export default async function CampaignPage({ params, searchParams }: { params: P
           <ContentEditor
             campaignId={id}
             channels={c.channels}
+            kind={c.kind}
             content={c.content}
             issues={issues}
             audienceSummary={describeAudience(c.audience, options.services)}

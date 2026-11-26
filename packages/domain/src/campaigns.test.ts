@@ -9,6 +9,8 @@ import {
   parseCampaignPlan,
   parseTestRecipients,
   validateChosenRecipients,
+  campaignEligibility as eligibilityFor,
+  checkCampaignCopy as copyCheck,
   limitToChosen,
   MAX_CHOSEN_RECIPIENTS,
   sandboxCampaignDraft,
@@ -215,5 +217,29 @@ describe("chosen recipients", () => {
     const matched = new Map([[a, ["Rex"]], [b, ["Tom"]]]);
     expect(limitToChosen(matched, null)).toBe(matched);
     expect([...limitToChosen(matched, [b, "33333333-3333-4333-8333-333333333333"]).keys()]).toEqual([b]);
+  });
+});
+
+describe("clinic announcements", () => {
+  const now = Date.parse("2026-11-25T12:00:00Z");
+  const base = { id: "c", firstName: "Lena", marketingConsent: false, smsConsent: true, email: "lena@example.com", flags: [] as string[], lastCampaignAt: new Date(now - 86_400_000) };
+  it("need no marketing consent and skip the 7-day limit; do-not-contact, email and text consent still apply", () => {
+    expect(eligibilityFor(base, "email", now, "marketing")).toBe("no_marketing_consent");
+    expect(eligibilityFor(base, "email", now, "announcement")).toBeNull();
+    expect(eligibilityFor({ ...base, marketingConsent: true }, "email", now, "marketing")).toBe("contacted_recently");
+    expect(eligibilityFor(base, "sms", now, "announcement")).toBeNull();
+    expect(eligibilityFor({ ...base, flags: ["do_not_contact"] }, "email", now, "announcement")).toBe("do_not_contact");
+    expect(eligibilityFor({ ...base, email: null }, "email", now, "announcement")).toBe("no_email");
+    expect(eligibilityFor({ ...base, smsConsent: false }, "sms", now, "announcement")).toBe("no_sms_consent");
+  });
+  it("refuses offers in an announcement, and allows plain service news", () => {
+    const facts = "Goal: We are closed on Friday, November 28 for Thanksgiving. 20% off dental. Clinic: Main";
+    const promo = copyCheck({ channel: "email", kind: "announcement", subject: "Closed Friday", body: "We are closed Friday. Book now: 20% off dental cleaning, a special offer!" }, facts);
+    expect(promo.filter((i) => i.kind === "promotion").map((i) => i.text)).toEqual([
+      expect.stringContaining('"20% off"'),
+      expect.stringContaining('"special offer"'),
+    ]);
+    expect(copyCheck({ channel: "email", kind: "announcement", subject: "Holiday hours", body: "Hi {{client_first_name}}, we are closed on November 28. Feel free to call {{clinic_phone}}." }, facts)).toEqual([]);
+    expect(copyCheck({ channel: "email", kind: "marketing", subject: "Dental", body: "20% off dental cleaning." }, facts).some((i) => i.kind === "promotion")).toBe(false);
   });
 });

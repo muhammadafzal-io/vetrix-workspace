@@ -217,10 +217,10 @@ export interface CampaignDraftResult {
   issues: { sms: CopyIssue[]; email: CopyIssue[] };
 }
 
-function issuesOf(draft: CampaignDraft, facts: string, forbidden: readonly string[]) {
+function issuesOf(draft: CampaignDraft, facts: string, forbidden: readonly string[], kind: CampaignDraftRequest["kind"]) {
   return {
-    sms: draft.sms !== undefined ? checkCampaignCopy({ channel: "sms", body: draft.sms }, facts, forbidden) : [],
-    email: draft.emailBody !== undefined ? checkCampaignCopy({ channel: "email", subject: draft.emailSubject, body: draft.emailBody }, facts, forbidden) : [],
+    sms: draft.sms !== undefined ? checkCampaignCopy({ channel: "sms", body: draft.sms, kind }, facts, forbidden) : [],
+    email: draft.emailBody !== undefined ? checkCampaignCopy({ channel: "email", subject: draft.emailSubject, body: draft.emailBody, kind }, facts, forbidden) : [],
   };
 }
 
@@ -234,7 +234,7 @@ export async function draftCampaign(req: CampaignDraftRequest, facts: string, fo
   const env = getEnv();
   const sandbox = (): CampaignDraftResult => {
     const draft = sandboxCampaignDraft(req);
-    return { draft, source: "sandbox", issues: issuesOf(draft, facts, forbidden) };
+    return { draft, source: "sandbox", issues: issuesOf(draft, facts, forbidden, req.kind) };
   };
   if (aiMode(env) !== "openai") return sandbox();
   const config = { apiKey: env.OPENAI_API_KEY!, model: env.OPENAI_TEXT_MODEL! };
@@ -244,7 +244,7 @@ export async function draftCampaign(req: CampaignDraftRequest, facts: string, fo
     const answer = await askJson(config, buildCampaignPrompt({ ...req, fix }), { name: "campaign", schema: CAMPAIGN_DRAFT_SCHEMA }, logger, "campaign", fetchImpl, CAMPAIGN_TIMEOUT_MS);
     const draft = parseCampaignDraft(answer ? JSON.stringify(answer) : null, req.channels);
     if (!draft) break;
-    const issues = issuesOf(draft, facts, forbidden);
+    const issues = issuesOf(draft, facts, forbidden, req.kind);
     last = { draft, source: "ai", issues };
     if (issues.sms.length === 0 && issues.email.length === 0) return last;
     fix = [...issues.sms, ...issues.email];

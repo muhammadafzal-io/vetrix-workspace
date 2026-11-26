@@ -51,7 +51,7 @@ describe("database_ref", () => {
 describe("migration files", () => {
   it("loads the registry and clinic files in order", () => {
     expect(loadMigrations("registry").map((m) => m.version)).toEqual(["001_registry", "003_auth", "005_phone_numbers", "010_platform_admin"]);
-    expect(loadMigrations("clinic").map((m) => m.version)).toEqual(["002_clinic", "004_front_desk", "006_messages", "007_jobs_and_replies", "008_booking_links", "009_widget", "011_patient_history", "012_reminder_delivery", "013_campaigns", "014_campaign_audience_snapshot", "015_campaign_chosen_recipients"]);
+    expect(loadMigrations("clinic").map((m) => m.version)).toEqual(["002_clinic", "004_front_desk", "006_messages", "007_jobs_and_replies", "008_booking_links", "009_widget", "011_patient_history", "012_reminder_delivery", "013_campaigns", "014_campaign_audience_snapshot", "015_campaign_chosen_recipients", "016_campaign_kind"]);
   });
 
   it("uses version numbers only once across both folders", () => {

@@ -61,4 +61,5 @@ export const MESSAGE_KIND_LABEL: Record<string, string> = {
   deceased_reply: "Condolence",
   help_reply: "Help reply",
   campaign: "Campaign",
+  announcement: "Announcement",
 };

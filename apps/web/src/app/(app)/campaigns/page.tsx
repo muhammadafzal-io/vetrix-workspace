@@ -57,7 +57,7 @@ export default async function CampaignsPage({ searchParams }: { searchParams: Pr
                   <p className="truncate text-small text-muted-foreground">{c.goal}</p>
                 </div>
                 <div className="flex shrink-0 flex-wrap gap-x-4 gap-y-1 text-caption text-muted-foreground sm:justify-end">
-                  <span>{c.channels.map((ch) => (ch === "sms" ? "Text" : "Email")).join(" + ")}</span>
+                  <span>{c.kind === "announcement" ? "Announcement · " : ""}{c.channels.map((ch) => (ch === "sms" ? "Text" : "Email")).join(" + ")}</span>
                   {c.sent + c.skipped > 0 && <span>{c.sent} sent · {c.skipped} skipped</span>}
                   <span>Created {when(c.created_at)}</span>
                 </div>

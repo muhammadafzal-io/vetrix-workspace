@@ -47,7 +47,7 @@ async function withRollback(fn: (db: SqlClient, loc: string, today: string) => P
 }
 
 async function readyCampaign(db: SqlClient, loc: string, channels: ("sms" | "email")[] = ["sms", "email"]) {
-  const id = await createCampaign(db, { locationId: loc, basics: { name: "Dental month", goal: "February is dental month: 10% off dental cleaning for dogs.", channels }, actor });
+  const id = await createCampaign(db, { locationId: loc, basics: { kind: "marketing", name: "Dental month", goal: "February is dental month: 10% off dental cleaning for dogs.", channels }, actor });
   await saveCampaignAudience(db, { locationId: loc, id, audience: dogs, actor });
   if (channels.includes("sms")) await saveCampaignContent(db, { locationId: loc, id, channel: "sms", source: "ai", subject: null, body: "{{clinic_name}}: Hi {{client_first_name}}, 10% off dental cleaning for {{pet_names}}. Book: {{booking_link}}", actor });
   if (channels.includes("email")) await saveCampaignContent(db, { locationId: loc, id, channel: "email", source: "ai", subject: "Dental month at {{clinic_name}}", body: "Hi {{client_first_name}},\n\n10% off dental cleaning for {{pet_names}}. Book: {{booking_link}}", actor });
@@ -175,6 +175,40 @@ describe.skipIf(!url)("campaigns on the clinic database", () => {
       await expect(saveCampaignRecipients(db, { locationId: loc, id: other, clientIds: ["00000000-0000-4000-8000-000000000000"], actor })).rejects.toThrow();
       await saveCampaignRecipients(db, { locationId: loc, id: other, clientIds: null, actor });
       expect((await getCampaign(db, loc, other)).recipient_ids).toBeNull();
+    }), 300_000);
+
+  it("announcements reach clients without marketing consent, carry no unsubscribe link and never count toward the 7-day limit", () =>
+    withRollback(async (db, loc, today) => {
+      const now = Date.now();
+      // A dog owner with an email but no marketing consent.
+      const client = (await db.query<{ id: string }>(
+        `INSERT INTO clients (location_id, first_name, last_name, mobile, email, sms_consent, marketing_consent, source) VALUES ($1, 'No', 'Marketing', '+15550106666', 'no.marketing@example.com', false, false, 'staff') RETURNING id`, [loc],
+      )).rows[0]!.id;
+      await db.query(`INSERT INTO patients (location_id, client_id, name, species, status) VALUES ($1, $2, 'Buddy', 'dog', 'active')`, [loc, client]);
+
+      const id = await createCampaign(db, { locationId: loc, basics: { kind: "announcement", name: "Holiday hours", goal: "We are closed on Thursday for Thanksgiving.", channels: ["email"] }, actor });
+      await saveCampaignAudience(db, { locationId: loc, id, audience: dogs, actor });
+      // An offer is refused in an announcement.
+      const bad = await saveCampaignContent(db, { locationId: loc, id, channel: "email", source: "staff", subject: "Closed Thursday", body: "Closed Thursday. Big sale on dental!", actor });
+      expect(bad.issues.some((i) => i.kind === "promotion")).toBe(true);
+      await expect(approveCampaign(db, { locationId: loc, id, actor })).rejects.toThrow(RuleViolationError);
+      await saveCampaignContent(db, { locationId: loc, id, channel: "email", source: "staff", subject: "Closed Thursday", body: "Hi {{client_first_name}}, we are closed on Thursday for Thanksgiving. Call {{clinic_phone}} with questions.", actor });
+      await approveCampaign(db, { locationId: loc, id, actor });
+      await saveCampaignRecipients(db, { locationId: loc, id, clientIds: [client], actor });
+      await scheduleCampaign(db, { locationId: loc, id, sendAt: new Date(now), now, actor });
+      await runDueCampaigns(db, { locationId: loc, now, today, sandbox: true, quietHours: false, values });
+      const row = (await db.query<{ status: string; template_key: string; body: string; token: string | null }>(
+        `SELECT r.status, m.template_key, m.body, r.unsubscribe_token_hash AS token FROM campaign_recipients r JOIN messages m ON m.id = r.message_id WHERE r.campaign_id = $1`, [id],
+      )).rows;
+      expect(row).toHaveLength(1);
+      expect(row[0]).toMatchObject({ status: "sent", template_key: "announcement", token: null });
+      expect(row[0]!.body).not.toContain("Stop these emails");
+
+      // A marketing campaign right after still reaches a consenting dog owner: the announcement did not use up the 7 days.
+      await db.query(`UPDATE clients SET marketing_consent = true WHERE id = $1`, [client]);
+      await db.query(`UPDATE messages SET status = 'sent' WHERE id IN (SELECT message_id FROM campaign_recipients WHERE campaign_id = $1)`, [id]);
+      const p = await previewAudience(db, { locationId: loc, audience: dogs, channels: ["email"], today, now, recipientIds: [client], kind: "marketing" });
+      expect(p.perChannel.email).toMatchObject({ send: 1 });
     }), 300_000);
 
   it("does not count simulated messages toward the 7-day limit", () =>

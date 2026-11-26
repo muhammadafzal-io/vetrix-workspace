@@ -6,7 +6,7 @@
 // clean latest version can be approved.
 import { useState, useTransition } from "react";
 import { AlertCircle, CheckCircle2, Loader2, Mail, MessageSquareText, Sparkles } from "lucide-react";
-import { CAMPAIGN_PLACEHOLDERS, CAMPAIGN_SMS_MAX, SMS_OPT_OUT, type CampaignChannel, type CopyIssue } from "@vetrix/domain";
+import { CAMPAIGN_PLACEHOLDERS, CAMPAIGN_SMS_MAX, SMS_OPT_OUT, type CampaignChannel, type CampaignKind, type CopyIssue } from "@vetrix/domain";
 import type { CampaignContent } from "@vetrix/db/runtime";
 import { Alert } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -51,8 +51,10 @@ function ChannelEditor({
   clinicName,
   clinicPhone,
   locked,
+  marketing,
 }: {
   campaignId: string;
+  marketing: boolean;
   channel: CampaignChannel;
   latest: CampaignContent | undefined;
   issues: CopyIssue[];
@@ -100,7 +102,7 @@ function ChannelEditor({
         <div className="grid gap-1 rounded-md bg-muted/40 px-3 py-2">
           <p className="text-caption font-medium text-muted-foreground">What a client sees (sample)</p>
           {channel === "email" && <p className="text-small font-medium">{fill(subject, clinicName, clinicPhone)}</p>}
-          <p className="whitespace-pre-line text-small">{fill(body, clinicName, clinicPhone)}{channel === "sms" ? ` ${SMS_OPT_OUT}` : "\n\n--\nStop these emails: (unsubscribe link)"}</p>
+          <p className="whitespace-pre-line text-small">{fill(body, clinicName, clinicPhone)}{channel === "sms" ? ` ${SMS_OPT_OUT}` : marketing ? "\n\n--\nStop these emails: (unsubscribe link)" : ""}</p>
         </div>
       )}
       <Issues issues={issues} />
@@ -136,6 +138,7 @@ function ChannelEditor({
 export function ContentEditor({
   campaignId,
   channels,
+  kind,
   content,
   issues,
   audienceSummary,
@@ -146,6 +149,7 @@ export function ContentEditor({
 }: {
   campaignId: string;
   channels: CampaignChannel[];
+  kind: CampaignKind;
   content: CampaignContent[];
   issues: Partial<Record<CampaignChannel, CopyIssue[]>>;
   audienceSummary: string;
@@ -203,6 +207,7 @@ export function ContentEditor({
           clinicName={clinicName}
           clinicPhone={clinicPhone}
           locked={locked}
+          marketing={kind === "marketing"}
         />
       ))}
     </div>

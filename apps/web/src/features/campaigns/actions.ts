@@ -105,7 +105,7 @@ export async function createCampaignWithAiAction(_: ActionResult | null, f: Form
     source = built.source;
     const { plan } = built;
     id = await withTransaction(shell.clinic, async (tx) => {
-      const newId = await createCampaign(tx, { locationId: loc, basics: { name: plan.name, goal: request, channels: plan.channels }, actor });
+      const newId = await createCampaign(tx, { locationId: loc, basics: { kind: "marketing", name: plan.name, goal: request, channels: plan.channels }, actor });
       await saveCampaignAudience(tx, { locationId: loc, id: newId, audience: plan.audience, actor });
       return newId;
     });
@@ -158,8 +158,10 @@ export async function previewAudienceAction(id: string, raw: unknown, channels: 
   try {
     const { shell } = await allowed();
     const audience = await checkedAudience(shell, raw);
+    const { kind } = await getCampaign(shell.clinic, shell.location.id, campaignId(id));
     const preview = await previewAudience(shell.clinic, {
       locationId: shell.location.id,
+      kind,
       audience,
       channels: channels.filter((c) => c === "sms" || c === "email"),
       today: clinicToday(shell.location.timezone),
@@ -205,6 +207,7 @@ export async function recipientChoicesAction(id: string, search: string, offset 
       now: Date.now(),
       campaignId: id,
       recipientIds: c.recipient_ids,
+      kind: c.kind,
       search: String(search ?? "").slice(0, 100),
       sampleOffset: Number.isInteger(offset) && offset >= 0 ? offset : 0,
       sampleLimit: PICK_PAGE,
@@ -244,7 +247,7 @@ export async function generateDraftAction(id: string, audienceSummary: string): 
     const loc = shell.location.id;
     const c = await getCampaign(shell.clinic, loc, campaignId(id));
     const { facts, clinicName } = await campaignFacts(shell.clinic, loc, c.goal);
-    const result = await draftCampaign({ goal: c.goal, clinicName, clinicFacts: facts, channels: c.channels, audienceSummary: audienceSummary.slice(0, 300) }, facts, forbiddenCampaignTerms());
+    const result = await draftCampaign({ kind: c.kind, goal: c.goal, clinicName, clinicFacts: facts, channels: c.channels, audienceSummary: audienceSummary.slice(0, 300) }, facts, forbiddenCampaignTerms());
     await withTransaction(shell.clinic, async (tx) => {
       if (result.draft.sms !== undefined) await saveCampaignContent(tx, { locationId: loc, id, channel: "sms", source: "ai", subject: null, body: result.draft.sms, actor });
       if (result.draft.emailBody !== undefined) {
@@ -407,7 +410,7 @@ export async function sendTestEmailAction(id: string, rawTo: string): Promise<Ac
       booking_link: widget.rows[0]?.widget_enabled ? `${appUrl}/w/${shell.organization.organization_slug}` : `call ${clinicPhone ?? "the clinic"}`,
     };
     const subject = `[TEST] ${fillCampaignMessage(email.subject ?? c.name, "email", values)}`;
-    const text = `${fillCampaignMessage(email.body, "email", values)}\n\n--\nThis is a test of the campaign "${c.name}" (version ${email.version}). Clients get their own name, their pets' names and a working unsubscribe link.`;
+    const text = `${fillCampaignMessage(email.body, "email", values)}\n\n--\nThis is a test of the campaign "${c.name}" (version ${email.version}). ${c.kind === "marketing" ? "Clients get their own name, their pets' names and a working unsubscribe link." : "Clients get their own name and their pets' names (announcements have no unsubscribe link)."}`;
 
     // Not production: if the provider refuses the clinic's sender (domain not
     // verified yet), use its test sender so the test can still be seen.
