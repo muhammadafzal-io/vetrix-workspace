@@ -2,7 +2,8 @@
 // timeline of everything the front desk knows. Each row says where it came
 // from (Clinic record, Owner said, AI, Automatic) so nobody mistakes an
 // owner's words or an AI judgement for something the clinic recorded.
-// Clinical notes, diagnoses and prescriptions stay in the clinic's PIMS.
+// With records.view, visit rows open the visit record (notes, prescriptions,
+// photos) and show what it holds.
 import Link from "next/link";
 import {
   Bell,
@@ -24,7 +25,7 @@ import {
   type HistorySource,
   type Permission,
 } from "@vetrix/domain";
-import { patientHealthSummary, patientTimeline, weightHistory, type HistoryEntry, type SqlClient } from "@vetrix/db/runtime";
+import { patientHealthSummary, patientTimeline, visitRecordCounts, weightHistory, type HistoryEntry, type SqlClient } from "@vetrix/db/runtime";
 import { EmptyState } from "@/components/patterns/empty-state";
 import { Panel } from "@/components/patterns/detail-list";
 import { Badge } from "@/components/ui/badge";
@@ -178,6 +179,22 @@ export async function PatientHistory({
     weightHistory(clinic, locationId, patientId),
     patientTimeline(clinic, locationId, patientId, { kinds, before, limit: 30 }),
   ]);
+  const canSeeRecords = permissions.has("records.view");
+  const visitIds = timeline.entries.filter((e) => e.kind === "visit").map((e) => e.id);
+  const counts = canSeeRecords ? await visitRecordCounts(clinic, locationId, visitIds) : new Map();
+  const recordHref = (e: HistoryEntry) =>
+    canSeeRecords && e.kind === "visit" && ["checked_in", "in_progress", "completed"].includes(e.status ?? "") ? `/patients/${patientId}/visits/${e.id}` : e.href;
+  const recordBadges = (e: HistoryEntry) => {
+    const c = counts.get(e.id);
+    if (!c) return null;
+    const parts = [
+      c.notes && `${c.notes} note${c.notes === 1 ? "" : "s"}`,
+      c.recommendations && `${c.recommendations} recommendation${c.recommendations === 1 ? "" : "s"}`,
+      c.prescriptions && `${c.prescriptions} Rx`,
+      c.photos && `${c.photos} photo${c.photos === 1 ? "" : "s"}`,
+    ].filter(Boolean);
+    return <Badge variant="secondary">{parts.join(" · ")}</Badge>;
+  };
   const overdue = summary.vaccines.filter((v) => v.state === "overdue");
   const dueSoon = summary.vaccines.filter((v) => v.state === "due_soon");
   const href = (q: Record<string, string>) => `/patients/${patientId}?${new URLSearchParams({ tab: "history", ...q }).toString()}`;
@@ -276,8 +293,9 @@ export async function PatientHistory({
         </nav>
         <p className="text-caption text-muted-foreground">
           Each entry shows where it came from: <strong className="font-medium">Clinic record</strong>, what the <strong className="font-medium">owner said</strong>,
-          the <strong className="font-medium">AI</strong>&apos;s judgement, or an <strong className="font-medium">automatic</strong> message. Clinical notes and
-          diagnoses stay in your practice software.
+          the <strong className="font-medium">AI</strong>&apos;s judgement, or an <strong className="font-medium">automatic</strong> message. {canSeeRecords
+            ? "Open a visit to add notes, prescriptions and photos."
+            : "Visit notes are visible to clinical staff."}
         </p>
 
         {timeline.entries.length === 0 ? (
@@ -297,11 +315,13 @@ export async function PatientHistory({
           <ol className="relative grid gap-0 border-l pl-5">
             {timeline.entries.map((e) => {
               const Icon = KIND_ICON[e.kind] ?? Bell;
+              const link = recordHref(e);
               const body = (
                 <>
                   <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
                     <span className="font-medium">{e.title}</span>
                     {statusBadge(e)}
+                    {e.kind === "visit" && recordBadges(e)}
                   </span>
                   {e.detail && <span className="line-clamp-2 text-small text-muted-foreground">{e.detail}</span>}
                   <span className="flex flex-wrap items-center gap-2 text-caption text-muted-foreground">
@@ -315,8 +335,8 @@ export async function PatientHistory({
                   <span className="absolute -left-[33px] top-3 flex size-6 items-center justify-center rounded-full border bg-card text-primary">
                     <Icon className="size-3.5" aria-hidden />
                   </span>
-                  {e.href ? (
-                    <Link href={e.href} className="grid gap-1 rounded-md p-2 -m-2 hover:bg-muted">
+                  {link ? (
+                    <Link href={link} className="grid gap-1 rounded-md p-2 -m-2 hover:bg-muted">
                       {body}
                     </Link>
                   ) : (

@@ -15,7 +15,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
 import type { ConsoleResult } from "./actions";
-import { browserVoiceSupport, useSpokenTurns } from "./browser-voice";
+import { browserVoiceSupport, ensureMicrophone, useSpokenTurns } from "./browser-voice";
 import { CallView, OnCallBar, useCallClock, type CallPhase } from "./call-view";
 import type { AssistantStatus } from "@/features/widget/avatar";
 import { SandboxBadge, TriageBadge } from "./labels";
@@ -96,6 +96,7 @@ export function SandboxConsole({
   const voice = useSpokenTurns({
     active: callLive && connectedAt !== null,
     autoListen: !muted,
+    keepListening: view === "call",
     replies: useMemo(() => lines.filter((l) => l.speaker === "ai").map((l) => ({ id: l.id, text: l.body })), [lines]),
     busy: pending,
     ended,
@@ -112,6 +113,8 @@ export function SandboxConsole({
   function start() {
     setError(null);
     if (talking) {
+      // Ask for the microphone in the click (see ensureMicrophone).
+      void ensureMicrophone();
       ringStart.current = Date.now();
       setConnectedAt(null);
       setMuted(false);
@@ -199,6 +202,8 @@ export function SandboxConsole({
           }
           muted={muted}
           error={error ?? voice.error}
+          onRetryMic={!error && voice.micBlocked ? () => void voice.retryMicrophone() : undefined}
+          onTalk={() => voice.listenNow()}
           onToggleMute={() => {
             if (!muted) voice.cancelListening();
             else if (voice.state === "idle" && !pending) voice.listenNow();

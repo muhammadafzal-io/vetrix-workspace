@@ -13,11 +13,13 @@
   },
   "devDependencies": {
     "@types/node": "^22.20.5",
+    "@types/ws": "8.18.1",
     "typescript": "^5.9.3"
   },
   "dependencies": {
     "@neondatabase/serverless": "^1.2.0",
+    "@vetrix/domain": "workspace:*",
     "@vetrix/pack": "workspace:*",
-    "@vetrix/domain": "workspace:*"
+    "ws": "8.18.3"
   }
 }

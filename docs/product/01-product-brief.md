@@ -18,6 +18,8 @@ The owner or practice manager of an independent small-animal clinic, or a group 
 
 Medical records, clinical notes, invoicing, inventory, prescriptions, lab results, or sync with the practice management system. Those stay in the clinic's PIMS (ezyVet, Cornerstone, AVImark, Shepherd, Digitail, Vetspire). Vetrix sits in front of the PIMS and hands off through the daily schedule export and the clinic's existing habits.
 
+**Change (26 Nov 2026, approved by Muhammad):** staff can now add visit notes, recommendations, prescriptions and photos to a visit in Vetrix. The rest of the clinical record (diagnoses as structured data, lab results, invoicing, inventory, PIMS sync) still stays in the PIMS. The AI never reads visit records.
+
 ## Why a clinic picks Vetrix
 
 Weave and PetDesk are messaging layers. They remind, they do not answer the phone and book against real room and doctor constraints. The phone AI startups answer the phone but book into a flat calendar, so staff rebook half of what the AI schedules. Vetrix does both, with the owner-plus-pet household model that clinics actually need.

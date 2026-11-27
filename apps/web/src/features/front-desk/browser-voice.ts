@@ -35,6 +35,38 @@ export function browserVoiceSupport(): { listen: boolean; speak: boolean } {
   return { listen: recognitionClass() !== null, speak: typeof window !== "undefined" && "speechSynthesis" in window };
 }
 
+// ---------- Microphone permission ----------
+
+export type MicAccess = "granted" | "denied" | "no-device" | "unsupported";
+
+/** Shown when the browser blocks the microphone: what to click, not just "blocked". */
+export const MIC_BLOCKED_HELP =
+  "The microphone is blocked for this site. Click the icon at the left of the address bar, set Microphone to Allow, then tap Try again. Or use Chat to type.";
+export const MIC_MISSING_HELP = "No microphone was found. Connect one and tap Try again, or use Chat to type.";
+
+/**
+ * Asks for the microphone. Call it straight from a click: browsers only show
+ * their "Allow microphone?" prompt for a request the person just made, and
+ * speech recognition started later (after Riley's greeting) can be refused
+ * silently. The stream is closed at once; recognition opens its own.
+ */
+export async function ensureMicrophone(): Promise<MicAccess> {
+  if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) return "unsupported";
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    for (const track of stream.getTracks()) track.stop();
+    return "granted";
+  } catch (error) {
+    const name = (error as DOMException).name;
+    return name === "NotFoundError" || name === "OverconstrainedError" ? "no-device" : "denied";
+  }
+}
+
+/** The help text for a failed microphone request, or null when it worked. */
+export function micProblem(access: MicAccess): string | null {
+  return access === "denied" ? MIC_BLOCKED_HELP : access === "no-device" ? MIC_MISSING_HELP : null;
+}
+
 /** A clear US English voice, preferring natural-sounding ones the browser offers. */
 function pickVoice(): SpeechSynthesisVoice | null {
   const voices = window.speechSynthesis.getVoices().filter((v) => v.lang.toLowerCase().startsWith("en"));
@@ -55,6 +87,17 @@ export function speak(lines: string[]): Promise<void> {
     if (queue.length === 0) return resolve();
     const voice = pickVoice();
     let left = queue.length;
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      clearTimeout(guard);
+      resolve();
+    };
+    // Chrome sometimes never fires "end" (long text, a voice that fails to
+    // load): never wait longer than the words could take, or the call sticks.
+    const words = queue.join(" ").split(/\s+/).length;
+    const guard = setTimeout(finish, 3000 + words * 450);
     for (const line of queue) {
       const u = new SpeechSynthesisUtterance(line);
       if (voice) u.voice = voice;
@@ -62,7 +105,7 @@ export function speak(lines: string[]): Promise<void> {
       u.rate = 1.02;
       u.onend = u.onerror = () => {
         left -= 1;
-        if (left === 0) resolve();
+        if (left === 0) finish();
       };
       synth.speak(u);
     }
@@ -114,9 +157,9 @@ export function listenOnce(handlers: { onInterim: (text: string) => void; onFina
     done = true;
     handlers.onError(
       e.error === "not-allowed" || e.error === "service-not-allowed"
-        ? "The microphone is blocked. Allow it in the browser's address bar, or type instead."
+        ? MIC_BLOCKED_HELP
         : e.error === "audio-capture"
-          ? "No microphone was found. Connect one, or type instead."
+          ? MIC_MISSING_HELP
           : "The browser could not hear you. Try again, or type instead.",
     );
   };
@@ -161,10 +204,21 @@ export function useSpokenTurns(options: {
   onHeard: (text: string) => void;
   /** False while muted: replies are still read aloud, but nothing is heard. */
   autoListen?: boolean;
+  /**
+   * On a call: keep listening through silence for as long as the call is
+   * live (a person on a call may think for a while). Otherwise listening
+   * stops after three silent turns and waits for the mic button.
+   */
+  keepListening?: boolean;
 }) {
   const { active, replies, busy, ended } = options;
   const autoListen = useRef(options.autoListen ?? true);
   autoListen.current = options.autoListen ?? true;
+  const keepListening = useRef(options.keepListening ?? false);
+  keepListening.current = options.keepListening ?? false;
+  // Turns that ended almost at once (the browser refusing to listen): stop
+  // after a few so a broken microphone never loops.
+  const quickEnds = useRef(0);
   const [state, setState] = useState<VoiceState>("idle");
   const [interim, setInterim] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -193,6 +247,7 @@ export function useSpokenTurns(options: {
     setError(null);
     setState("listening");
     setInterim("");
+    const startedAt = Date.now();
     listener.current = listenOnce({
       onInterim: setInterim,
       onFinal: (text) => {
@@ -201,13 +256,15 @@ export function useSpokenTurns(options: {
         if (!live.current) return setState("idle");
         if (text) {
           silentTurns.current = 0;
+          quickEnds.current = 0;
           setState("idle");
           heard.current(text);
-        } else if (++silentTurns.current < 3) {
-          listen();
-        } else {
-          setState("idle");
+          return;
         }
+        quickEnds.current = Date.now() - startedAt < 1500 ? quickEnds.current + 1 : 0;
+        const keepGoing = keepListening.current ? quickEnds.current < 3 : ++silentTurns.current < 3;
+        if (keepGoing && autoListen.current) listen();
+        else setState("idle");
       },
       onError: (message) => {
         listener.current = null;
@@ -270,10 +327,22 @@ export function useSpokenTurns(options: {
     skipExisting() {
       spokenUpTo.current = Math.max(spokenUpTo.current, ...replies.map((r) => r.id));
     },
+    /** "Try again" after a blocked microphone: ask again (from the click), then listen. */
+    async retryMicrophone() {
+      setError(null);
+      const problem = micProblem(await ensureMicrophone());
+      if (problem) return setError(problem);
+      live.current = true;
+      silentTurns.current = 0;
+      listen();
+    },
+    /** True when the last problem was the microphone (so "Try again" is offered). */
+    micBlocked: error === MIC_BLOCKED_HELP || error === MIC_MISSING_HELP,
     /** Listen right away, even in the same click that turns voice on. */
     listenNow() {
       live.current = true;
       silentTurns.current = 0;
+      quickEnds.current = 0;
       listen();
     },
     /** The mic button: done speaking (send what was heard), or speak now (interrupts the AI). */
@@ -281,6 +350,7 @@ export function useSpokenTurns(options: {
       if (state === "listening") listener.current?.stop();
       else {
         silentTurns.current = 0;
+        quickEnds.current = 0;
         listen();
       }
     },

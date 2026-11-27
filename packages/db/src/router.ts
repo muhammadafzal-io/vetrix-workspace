@@ -1,7 +1,8 @@
 // Tenant routing: given an organization, return a connection pool for its own
 // clinic database. Lookups are cached briefly so each request does not hit the
 // registry; pools are cached per database so connections are reused.
-import { Pool } from "@neondatabase/serverless";
+import type { Pool } from "@neondatabase/serverless";
+import { createNeonPool } from "./neon-pool";
 import { flowOn, trace } from "@vetrix/domain";
 import { resolveDatabaseRef } from "./database-ref";
 import type { TenantDatabase } from "./tenants";
@@ -152,14 +153,14 @@ export function createNeonTenantRouter(registryUrl: string, env: Record<string, 
     if (env.DB_QUERY_LOG === "1" || env.FLOW_TRACE === "1") logQueries(pool, name);
     return pool;
   };
-  const registry = quiet(new Pool({ connectionString: registryUrl, max: 5, idleTimeoutMillis: POOL_IDLE_MS }), "registry");
+  const registry = quiet(createNeonPool({ connectionString: registryUrl, max: 5, idleTimeoutMillis: POOL_IDLE_MS }), "registry");
   const router = createTenantRouter<Pool>({
     env,
     lookup: async (organization) => {
       const { rows } = await registry.query<TenantDatabase>(TENANT_LOOKUP_SQL, [organization]);
       return rows[0];
     },
-    createPool: (connectionString) => quiet(new Pool({ connectionString, max: 5, idleTimeoutMillis: POOL_IDLE_MS }), "clinic"),
+    createPool: (connectionString) => quiet(createNeonPool({ connectionString, max: 5, idleTimeoutMillis: POOL_IDLE_MS }), "clinic"),
   });
   return {
     registry,

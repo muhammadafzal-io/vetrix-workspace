@@ -679,6 +679,43 @@ describe("tappable answers in the website chat", () => {
     expect(booked.state.booked).toHaveLength(1);
   });
 
+  it("lists every free time with each doctor, and a tapped one books that exact time and doctor", async () => {
+    const { port, log } = fakePort();
+    const more: SlotOffer[] = [
+      { start: at("2026-11-18", "09:00"), end: at("2026-11-18", "09:30"), providerId: "p1", providerName: "Dr. Bell" },
+      { start: at("2026-11-18", "11:30"), end: at("2026-11-18", "12:00"), providerId: "p1", providerName: "Dr. Bell" },
+      { start: at("2026-11-18", "11:30"), end: at("2026-11-18", "12:00"), providerId: "p2", providerName: "Dr. Kim" },
+      { start: at("2026-11-19", "16:00"), end: at("2026-11-19", "16:30"), providerId: "p2", providerName: "Dr. Kim" },
+    ];
+    const plain = port.findSlots;
+    port.findSlots = async (req) => ({ ...(await plain(req)), more });
+    let understood = 0;
+    port.ai = { understand: async (req) => (understood++, req.text), rewrite: async () => null };
+    const c = ctx({ channel: "sms", web: true });
+    const r = await talk(c, port, sam, ["book a nail trim for Max"]);
+    const times = chatChoices(r.state, c).filter((x) => x.time);
+    expect(times).toHaveLength(4);
+    expect(times.map((t) => t.time!.doctor)).toEqual(["Dr. Bell", "Dr. Bell", "Dr. Kim", "Dr. Kim"]);
+    expect(new Set(times.map((t) => t.time!.date)).size).toBe(2);
+    const kim = times[2]!;
+    expect(kim.value).toMatch(/11:30 AM with Dr\. Kim$/);
+    const before = understood;
+    const booked = await respond(r.state, kim.value, c, port);
+    expect(understood).toBe(before); // an exact tapped answer is not restated
+    expect(log.booked.at(-1)!.slot).toMatchObject({ start: at("2026-11-18", "11:30"), providerId: "p2" });
+    expect(booked.state.booked).toHaveLength(1);
+  });
+
+  it("does not book from words that only look like a listed time", async () => {
+    const { port, log } = fakePort();
+    const plain = port.findSlots;
+    port.findSlots = async (req) => ({ ...(await plain(req)), more: [{ start: at("2026-11-19", "16:00"), end: at("2026-11-19", "16:30"), providerId: "p2", providerName: "Dr. Kim" }] });
+    const c = ctx({ channel: "sms", web: true });
+    const r = await talk(c, port, sam, ["book a nail trim for Max"]);
+    await respond(r.state, "something with Dr. Kim", c, port);
+    expect(log.booked).toHaveLength(0);
+  });
+
   it("gives no buttons during an emergency or on the open question", async () => {
     const { port } = fakePort();
     const c = ctx({ channel: "sms", web: true });

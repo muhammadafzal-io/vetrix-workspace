@@ -8,7 +8,9 @@ import { notFound, redirect } from "next/navigation";
 import { isPlatformAdmin, listAllLocations, loadStaffAccess, membershipsFor, type LocationSummary } from "@vetrix/db/runtime";
 import type { SqlClient } from "@vetrix/db/runtime";
 import { trace, traced, type Permission } from "@vetrix/domain";
+import { getSessionCookie } from "better-auth/cookies";
 import { auth } from "./auth";
+import { createSessionStore, type CachedSessionStore } from "./session-cache";
 import { resolveStaffContext, type StaffContext, type StaffContextResult } from "./staff-context";
 import { tenancy } from "./tenancy";
 
@@ -23,16 +25,31 @@ export const ACTIVE_LOCATION_COOKIE = "vetrix.location";
 /** All locations of a clinic database, loaded once per request. */
 const clinicLocations = cache((clinic: SqlClient) => listAllLocations(clinic));
 
-/** The Better Auth session for this request, or null. Cached per request. */
-export const getSession = cache(async () =>
-  traced(
+type Session = Awaited<ReturnType<ReturnType<typeof auth>["api"]["getSession"]>>;
+const globalForSessions = globalThis as unknown as { vetrixSessions?: CachedSessionStore<NonNullable<Session>> };
+const sessions = (globalForSessions.vetrixSessions ??= createSessionStore<NonNullable<Session>>());
+
+/** The Better Auth session for this request, or null. Cached per request, and checked sessions for up to a minute (session-cache.ts). */
+export const getSession = cache(async () => {
+  const h = await headers();
+  const token = getSessionCookie(h, { cookiePrefix: "vetrix" });
+  const known = token ? sessions.get(token) : undefined;
+  if (known) {
+    trace("auth", "lib/session.ts › getSession", `session checked within the last minute → user ${known.user.id.slice(0, 8)}… (no database query)`);
+    return known;
+  }
+  return traced(
     "auth",
     "lib/session.ts › getSession",
     "Better Auth reads the session cookie and checks it (registry database)",
-    async () => auth().api.getSession({ headers: await headers() }),
+    async () => {
+      const s = await auth().api.getSession({ headers: h });
+      if (s && token) sessions.set(token, s, s.session.expiresAt);
+      return s;
+    },
     (s) => (s ? `signed in as user ${s.user.id.slice(0, 8)}…` : "no valid session"),
-  ),
-);
+  );
+});
 
 export const getStaffContext = cache(async (): Promise<StaffContextResult | null> => {
   const session = await getSession();

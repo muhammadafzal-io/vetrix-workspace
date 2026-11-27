@@ -14,7 +14,7 @@
 //
 // `registry` must be ONE dedicated connection (pool.connect()), never a pool:
 // these functions use BEGIN/COMMIT, which a pool may send to different connections.
-import { Pool } from "@neondatabase/serverless";
+import { createNeonPool } from "./neon-pool";
 import { ConflictError, DEFAULT_CLINIC_REGION, ONBOARDING_STEPS, type ValidNewClinic } from "@vetrix/domain";
 import { getVeterinaryPack, veterinaryRawPack } from "@vetrix/pack";
 import { syncRoleCatalogue, upsertStaffMember } from "./access";
@@ -111,7 +111,7 @@ export interface ClinicSetupDeps {
 }
 
 async function defaultConnect(url: string) {
-  const pool = new Pool({ connectionString: url, max: 1 });
+  const pool = createNeonPool({ connectionString: url, max: 1 });
   const client = await pool.connect();
   return {
     client,

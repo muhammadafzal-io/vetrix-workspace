@@ -17,6 +17,7 @@ import {
   normalizePhone,
   NotFoundError,
   offerTwo,
+  findSlotsByProvider,
   respond,
   respondTransferFailed,
   startConversation,
@@ -52,6 +53,9 @@ const AI: Actor = { type: "ai", id: null };
 const MAX_TEXT = 1000;
 /** The AI never offers a time sooner than this. */
 const LEAD_MS = 30 * 60_000;
+/** The time picker on screen: every free time on the next few open days, all doctors. */
+const OPEN_TIME_DAYS = 5;
+const OPEN_TIME_LIMIT = 300;
 
 // ---------- Setup ----------
 
@@ -318,8 +322,14 @@ function createPort(
       const blocking = [...eligibility.blocking, ...eligibility.warnings];
       if (blocking.length > 0) return { slots: [], blocked: blocking[0]!.message };
       const notBefore = Math.max(setup.ctx.now + LEAD_MS, (req.after ?? 0) + 1);
-      const all = findSlots(data, { service, patient, dates: dateRange(setup.today, req.withinDays), notBefore, limit: 400 });
-      return { slots: offerTwo(all, setup.ctx.timezone).map((s) => ({ start: s.start, end: s.end, providerId: s.providerId })), blocked: null };
+      const dates = dateRange(setup.today, req.withinDays);
+      const all = findSlots(data, { service, patient, dates, notBefore, limit: 400 });
+      const names = new Map(data.providers.map((p) => [p.id, p.name]));
+      const offer = (x: { start: number; end: number; providerId: string }) => ({ start: x.start, end: x.end, providerId: x.providerId, providerName: names.get(x.providerId) });
+      // For the screen: every free time with every doctor free then (rooms and equipment checked), next few open days.
+      const firstDays = [...new Set(all.map((x) => localParts(x.start, setup.ctx.timezone).date))].slice(0, OPEN_TIME_DAYS);
+      const more = firstDays.length ? findSlotsByProvider(data, { service, patient, dates: firstDays, notBefore, limit: OPEN_TIME_LIMIT }) : [];
+      return { slots: offerTwo(all, setup.ctx.timezone).map(offer), more: more.map(offer), blocked: null };
     },
 
     async findGroupSlots(req) {

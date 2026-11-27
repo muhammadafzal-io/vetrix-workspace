@@ -353,6 +353,19 @@ export function slotLabel(start: number, timezone: string, now: number): string 
   return `${WEEKDAYS[p.weekday]}, ${MONTHS[mm! - 1]} ${dd} at ${time}`;
 }
 
+/** What a tapped time sends (and shows): "Friday, Nov 28 at 2:30 PM with Dr. Marcus Bell". */
+export function openTimeValue(slot: { start: number; providerName?: string }, timezone: string, now: number): string {
+  const label = slotLabel(slot.start, timezone, now);
+  return `${label.charAt(0).toUpperCase()}${label.slice(1)}${slot.providerName ? ` with ${slot.providerName}` : ""}`;
+}
+
+/** The time from the on-screen list whose exact words were sent, or null. */
+export function pickOpenTime<T extends { start: number; providerName?: string }>(text: string, open: T[], timezone: string, now: number): T | null {
+  const t = text.trim().toLowerCase();
+  if (!t || open.length === 0) return null;
+  return open.find((o) => openTimeValue(o, timezone, now).toLowerCase() === t) ?? null;
+}
+
 const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 
 function clock(hhmm: string): string {

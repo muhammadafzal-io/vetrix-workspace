@@ -13,7 +13,8 @@
 // Pure, so it can be tested without a network; a failure anywhere means the
 // scripted engine answers as before.
 import type { ConversationState, FrontDeskContext } from "./front-desk";
-import { isNo, isYes, slotLabel } from "./front-desk-language";
+import { isNo, isYes, openTimeValue, slotLabel } from "./front-desk-language";
+import { localParts } from "./time";
 
 export interface UnderstandRequest {
   /** What the caller just said. */
@@ -212,6 +213,26 @@ export interface ChatChoice {
   label: string;
   /** What is sent when tapped (words the engine already understands). */
   value: string;
+  /** A time from the full list: its clinic day ("2026-11-28"), day label and doctor. */
+  time?: { date: string; day: string; doctor: string | null };
+}
+
+const DAY_SHORT = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const MONTH_SHORT = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/** Every free time with each doctor, for the time picker (the two spoken ones come first as quick answers). */
+export function openTimeChoices(s: ConversationState, ctx: FrontDeskContext): ChatChoice[] {
+  const today = localParts(ctx.now, ctx.timezone).date;
+  const tomorrow = localParts(ctx.now + 86_400_000, ctx.timezone).date;
+  return (s.openTimes ?? []).map((o) => {
+    const p = localParts(o.start, ctx.timezone);
+    const [, mm, dd] = p.date.split("-").map(Number);
+    const day = p.date === today ? "Today" : p.date === tomorrow ? "Tomorrow" : `${DAY_SHORT[p.weekday]} ${MONTH_SHORT[mm! - 1]} ${dd}`;
+    const h24 = Math.floor(p.minutes / 60);
+    const min = p.minutes % 60;
+    const time = `${h24 % 12 === 0 ? 12 : h24 % 12}:${String(min).padStart(2, "0")} ${h24 < 12 ? "AM" : "PM"}`;
+    return { label: time, value: openTimeValue(o, ctx.timezone, ctx.now), time: { date: p.date, day, doctor: o.providerName ?? null } };
+  });
 }
 
 const COMMON_REASONS: ChatChoice[] = [
@@ -239,6 +260,7 @@ export function chatChoices(s: ConversationState, ctx: FrontDeskContext): ChatCh
       return [
         ...starts.slice(0, 2).map((start, i) => ({ label: label(start), value: i === 0 ? "the first one" : "the second one" })),
         { label: "Other times", value: "none of those" },
+        ...openTimeChoices(s, ctx),
       ];
     }
     case "confirm_new_pet":

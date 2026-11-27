@@ -1,7 +1,8 @@
 // Patient history at the front desk: which visit status changes are allowed,
 // what staff may record when a visit is completed, and what the History tab
 // shows. Not a clinical record: diagnoses, notes and prescriptions stay in
-// the clinic's PIMS (product brief, out of scope for V1).
+// the clinic's PIMS, except the visit records added 26 Nov 2026
+// (notes, recommendations, prescriptions, photos: ./visit-records.ts).
 import { RuleViolationError, ValidationError } from "./errors";
 import type { Permission } from "./access";
 

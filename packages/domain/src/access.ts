@@ -10,6 +10,9 @@ export const PERMISSIONS = {
   "clients.manage": "Add and edit clients and households",
   "patients.view": "See pets and their history",
   "patients.manage": "Add and edit pets, vaccines and prevention",
+  "records.view": "See visit notes, prescriptions and photos",
+  "records.write": "Add visit notes, recommendations and photos",
+  "records.prescribe": "Record prescriptions",
   "calls.view": "See calls, transcripts and triage results",
   "calls.listen": "Play call recordings",
   "messages.view": "See texts and emails",
@@ -36,20 +39,23 @@ const ALL_BUT = (...excluded: Permission[]) => ALL_PERMISSIONS.filter((p) => !ex
 /** Default roles created in every clinic database. */
 export const ROLES: Record<RoleKey, { label: string; permissions: readonly Permission[] }> = {
   owner: { label: "Owner", permissions: ALL_PERMISSIONS },
-  manager: { label: "Practice manager", permissions: ALL_BUT("billing.manage") },
+  // Prescribing is a doctor's act: managers record notes and photos, not prescriptions.
+  manager: { label: "Practice manager", permissions: ALL_BUT("billing.manage", "records.prescribe") },
   dvm: {
     label: "Doctor",
     permissions: [
       "schedule.view", "schedule.manage", "clients.view", "clients.manage", "patients.view",
-      "patients.manage", "calls.view", "calls.listen", "messages.view", "messages.send",
-      "tasks.view", "tasks.manage", "tasks.controlled_substances", "reports.view",
+      "patients.manage", "records.view", "records.write", "records.prescribe", "calls.view",
+      "calls.listen", "messages.view", "messages.send", "tasks.view", "tasks.manage",
+      "tasks.controlled_substances", "reports.view",
     ],
   },
   technician: {
     label: "Technician",
     permissions: [
       "schedule.view", "schedule.manage", "clients.view", "patients.view", "patients.manage",
-      "calls.view", "messages.view", "messages.send", "tasks.view", "tasks.manage",
+      "records.view", "records.write", "calls.view", "messages.view", "messages.send",
+      "tasks.view", "tasks.manage",
     ],
   },
   assistant: {

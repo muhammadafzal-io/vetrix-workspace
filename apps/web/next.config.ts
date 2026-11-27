@@ -3,8 +3,10 @@ import type { NextConfig } from "next";
 
 // Basic protections on every response. A full script CSP needs nonces and is
 // added with the first deployment; these headers are safe today.
-// The microphone is off everywhere except the two places people talk to the
-// AI front desk out loud: the staff test console and the booking widget.
+// The microphone is off everywhere except where people talk to the AI front
+// desk out loud: the staff test console, the booking widget, and the pages
+// that host the widget's frame (home page "Try it live", sign-in pages) (a frame never gets more
+// than its page allows, so microphone=() here blocked the widget's mic).
 const sharedHeaders = (microphone: boolean) => [
   { key: "X-Content-Type-Options", value: "nosniff" },
   { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
@@ -25,7 +27,10 @@ const nextConfig: NextConfig = {
     return [
       // The booking widget (/w/...) can be framed by the clinic's own sites:
       // middleware sets its frame-ancestors from the clinic's settings.
-      { source: "/((?!w/|calls/sandbox$).*)", headers: securityHeaders(false) },
+      { source: "/((?!w/|calls/sandbox$|sign-in$|forgot-password$|reset-password$).+)", headers: securityHeaders(false) },
+      // Pages that host the widget's frame.
+      { source: "/", headers: securityHeaders(true) },
+      { source: "/:page(sign-in|forgot-password|reset-password)", headers: securityHeaders(true) },
       { source: "/calls/sandbox", headers: securityHeaders(true) },
       { source: "/w/:path*", headers: sharedHeaders(true) },
     ];
@@ -41,6 +46,8 @@ const nextConfig: NextConfig = {
   // Trace files from the monorepo root so the workspace packages are included.
   outputFileTracingRoot: path.join(import.meta.dirname, "../.."),
   transpilePackages: ["@vetrix/domain", "@vetrix/db", "@vetrix/pack"],
+  // The database driver's WebSocket library runs as plain Node code, not bundled.
+  serverExternalPackages: ["ws"],
   // The admin Clinics page runs the clinic migrations: ship the SQL files with it.
   outputFileTracingIncludes: { "/admin/clinics": ["../../db/migrations/**/*.sql"] },
   // Clinic CSV imports are sent through a server action (each file up to 10 MB).

@@ -27,6 +27,7 @@ export function VisitPanel({
   canManage,
   vaccines = [],
   canRecordVaccines = false,
+  canSeeRecords = false,
 }: {
   appt: CalendarAppointment;
   date: string;
@@ -35,6 +36,8 @@ export function VisitPanel({
   /** Vaccines for this pet's species, for "Complete visit". */
   vaccines?: VaccineChoice[];
   canRecordVaccines?: boolean;
+  /** records.view: link to the visit record (notes, prescriptions, photos). */
+  canSeeRecords?: boolean;
 }) {
   const status = STATUS[appt.status] ?? { label: appt.status, variant: "muted" as const };
   const open = appt.status === "requested" || appt.status === "confirmed";
@@ -93,6 +96,11 @@ export function VisitPanel({
             canRecordVaccines={canRecordVaccines}
           />
         </div>
+      )}
+      {canSeeRecords && ["checked_in", "in_progress", "completed"].includes(appt.status) && (
+        <Link href={`/patients/${appt.patient_id}/visits/${appt.id}`} className={buttonVariants({ size: "sm", variant: "outline" })}>
+          Notes, prescriptions and photos
+        </Link>
       )}
       {canManage && open && (
         <div className="grid gap-2 border-t pt-4">

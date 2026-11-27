@@ -10,7 +10,7 @@
 //   pnpm db:admin:grant --email you@example.com [--revoke]   platform admin: may add clinics from the Clinics page
 // Output never includes passwords: only host and database names.
 import { parseArgs } from "node:util";
-import { Pool } from "@neondatabase/serverless";
+import { createNeonPool } from "./neon-pool";
 import { assertPostgresUrl, describeUrl, neonRegionFromUrl, resolveDatabaseRef } from "./database-ref";
 import { appliedMigrations, loadMigrations, migrateDatabase, MigrationError, publicTables, type MigrationTarget } from "./migrations";
 import { getVeterinaryPack, veterinaryRawPack } from "@vetrix/pack";
@@ -22,7 +22,7 @@ import { isRoleKey, ROLE_KEYS } from "@vetrix/domain";
 import { assignPhoneNumber } from "./phone-numbers";
 import { listTenantDatabases, recordTenantMigrations, registerTenant, setTenantStatus, type TenantDatabase } from "./tenants";
 
-const EXPECTED_TABLES: Record<MigrationTarget, number> = { registry: 13, clinic: 67 };
+const EXPECTED_TABLES: Record<MigrationTarget, number> = { registry: 13, clinic: 70 };
 
 function registryUrl(): string {
   const url = process.env.REGISTRY_DATABASE_URL;
@@ -33,7 +33,7 @@ function registryUrl(): string {
 
 /** Runs `fn` with one dedicated connection, then closes everything. */
 async function withClient<T>(url: string, fn: (client: import("./migrations").SqlClient) => Promise<T>): Promise<T> {
-  const pool = new Pool({ connectionString: url, max: 1 });
+  const pool = createNeonPool({ connectionString: url, max: 1 });
   const client = await pool.connect();
   try {
     return await fn(client);

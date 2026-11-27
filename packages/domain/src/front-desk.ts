@@ -35,6 +35,7 @@ import {
   parseTimeRequest,
   parseYesNo,
   pickOffered,
+  pickOpenTime,
   slotLabel,
   speciesFromWords,
   wantsSeveralPets,
@@ -120,6 +121,8 @@ export interface SlotOffer {
   start: number;
   end: number;
   providerId: string;
+  /** Shown with the time on screen ("with Dr. Bell"). */
+  providerName?: string;
 }
 
 /** What the front desk needs to know about each pack service. */
@@ -197,7 +200,8 @@ export interface UpcomingVisit {
 export interface FrontDeskPort {
   classify(text: string, petNames: string[]): Promise<TriageAssessment>;
   /** Up to two good options (or the next ones after `after`), searching `withinDays` from today. */
-  findSlots(req: { patientId: string; packServiceId: string; withinDays: number; after?: number; excludeAppointmentId?: string }): Promise<{ slots: SlotOffer[]; blocked: string | null }>;
+  /** `slots`: the two to say; `more`: every free time with each doctor free then, for the screen. */
+  findSlots(req: { patientId: string; packServiceId: string; withinDays: number; after?: number; excludeAppointmentId?: string }): Promise<{ slots: SlotOffer[]; more?: SlotOffer[]; blocked: string | null }>;
   /** Back-to-back times for several pets, same provider where possible: up to two options. */
   findGroupSlots(req: { items: { patientId: string; packServiceId: string }[]; withinDays: number; after?: number }): Promise<{ groups: SlotOffer[][]; blocked: string | null }>;
   /**
@@ -315,6 +319,8 @@ export interface ConversationState {
   careNoted: boolean;
   reason: string[];
   offered: SlotOffer[];
+  /** Every free time (and doctor) shown on screen while offering; a tapped one is booked as is. */
+  openTimes?: SlotOffer[];
   offeredGroups: SlotOffer[][];
   offerRounds: number;
   /** A day or time the caller asked for ("tomorrow afternoon", "10:30"). */
@@ -512,6 +518,7 @@ class Turn {
     this.s.adviceAsked = false;
     this.s.careNoted = false;
     this.s.offered = [];
+    this.s.openTimes = [];
     this.s.offeredGroups = [];
     this.s.offerRounds = 0;
     this.s.prefer = null;
@@ -861,7 +868,7 @@ class Turn {
     const from = after ?? (prefer ? prefer.after - 1 : undefined);
     const withinDays = s.urgentWindow ? 2 : prefer ? Math.max(14, Math.ceil((prefer.after - this.ctx.now) / 86_400_000) + 7) : 14;
     if (s.multi) return this.offerGroup(from);
-    const { slots, blocked } = await this.port.findSlots({ patientId: s.petId!, packServiceId: s.serviceId!, withinDays, after: from, excludeAppointmentId: s.target?.appointmentId });
+    const { slots, more, blocked } = await this.port.findSlots({ patientId: s.petId!, packServiceId: s.serviceId!, withinDays, after: from, excludeAppointmentId: s.target?.appointmentId });
     if (blocked) {
       const info = this.ctx.services[s.serviceId!];
       if (info?.fallbackServiceId && info.fallbackServiceId !== s.serviceId) {
@@ -895,6 +902,7 @@ class Turn {
 
     const dropOff = s.triedDropOff && s.serviceId === this.ctx.rules.levels.urgent.fallback_if_no_slot;
     s.offered = dropOff ? slots.slice(0, 1) : slots.slice(0, 2);
+    s.openTimes = dropOff ? [] : (more ?? []);
     s.offerRounds += 1;
     s.phase = "offering";
     const [a, b] = s.offered.map((o) => slotLabel(o.start, this.ctx.timezone, this.ctx.now));
@@ -931,6 +939,7 @@ class Turn {
     }
     s.offeredGroups = groups.slice(0, 2);
     s.offered = s.offeredGroups.map((g) => g[0]!);
+    s.openTimes = [];
     s.offerRounds += 1;
     s.phase = "offering";
     const [a, b] = s.offered.map((o) => slotLabel(o.start, this.ctx.timezone, this.ctx.now));
@@ -1199,6 +1208,12 @@ class Turn {
         return this.advance();
       }
       case "offering": {
+        // A time (and doctor) tapped from the full list on screen.
+        const tapped = pickOpenTime(text, s.openTimes ?? [], this.ctx.timezone, this.ctx.now);
+        if (tapped) {
+          s.offered = [tapped];
+          return this.takeSlot(0);
+        }
         const choice = pickOffered(text, s.offered, this.ctx.timezone);
         if (typeof choice === "number") return this.takeSlot(choice);
         if (choice === "none") {
@@ -1454,14 +1469,16 @@ export async function respond(state: ConversationState, text: string, ctx: Front
   }
   // The model restates the message for the engine's parsers (triage above read the original words).
   let input = text;
-  if (port.ai) {
+  // A time tapped from the list is an exact answer: no restating.
+  const tappedTime = s.phase === "offering" && pickOpenTime(text, s.openTimes ?? [], ctx.timezone, ctx.now) !== null;
+  if (port.ai && !tappedTime) {
     const { expecting, open, forms } = describeExpectation(s, ctx);
     trace("domain", "domain/front-desk.ts › respond", `b) OpenAI restates the message for the engine (expecting: ${forms ? "one of " + forms.length + " fixed answers" : "free text"})`);
     const restated = await port.ai.understand({ text, expecting, open, forms, aiName: ctx.aiName, clinicName: ctx.clinicName }).catch(() => null);
     input = engineText(text, restated, open, forms);
     trace("domain", "domain/front-desk.ts › respond", `   ${restated === null ? "no answer → the owner's own words are used" : input === text ? "restatement not accepted → the owner's own words are used" : "restatement accepted"}`);
   } else {
-    trace("domain", "domain/front-desk.ts › respond", "b) no OpenAI key → the engine reads the owner's own words (sandbox AI)");
+    trace("domain", "domain/front-desk.ts › respond", tappedTime ? "b) a time tapped from the list → booked as is" : "b) no OpenAI key → the engine reads the owner's own words (sandbox AI)");
   }
   trace("domain", "domain/front-desk.ts › respond", `c) Turn.handle: the scripted engine decides the action (phase "${s.phase}")`);
   await turn.handle(input, s.phase === "open" || s.phase === "anything_else" ? intentOverride : null);

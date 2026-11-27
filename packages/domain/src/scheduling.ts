@@ -314,6 +314,19 @@ function pickResources(
 }
 
 /**
+ * Every free start for every provider who can do the visit (rooms and
+ * equipment checked per slot, as in findSlots), earliest first. `findSlots`
+ * keeps one provider per start; this keeps each one, so the owner can choose
+ * the doctor as well as the time.
+ */
+export function findSlotsByProvider(data: SchedulingData, req: SlotRequest): Slot[] {
+  const all = data.providers.flatMap((p) => (req.providerId && p.id !== req.providerId ? [] : findSlots(data, { ...req, providerId: p.id })));
+  const name = new Map(data.providers.map((p) => [p.id, p.name]));
+  all.sort((a, b) => a.start - b.start || (name.get(a.providerId) ?? "").localeCompare(name.get(b.providerId) ?? ""));
+  return req.limit ? all.slice(0, req.limit) : all;
+}
+
+/**
  * Two good options to offer a caller: the earliest slot, and the earliest one
  * on the other half of the day (morning vs afternoon), so the owner has a real choice.
  */

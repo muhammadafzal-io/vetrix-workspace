@@ -367,7 +367,19 @@ export async function chatStartAction(org: string, locationId: string, token: st
   }
 }
 
-export async function chatSendAction(org: string, locationId: string, token: string, callId: string, text: string): Promise<ChatResult> {
+/**
+ * `spoken`: the visitor is on the call screen. Replies are then never
+ * reworded by the AI (as on phone calls): the script reads aloud well and
+ * the extra model call only adds a pause. Understanding stays on, since
+ * speech recognition mishears words.
+ */
+function spokenAI(spoken: boolean) {
+  const ai = conversationAI();
+  if (!ai || !spoken) return ai;
+  return { understand: ai.understand.bind(ai), rewrite: async () => null };
+}
+
+export async function chatSendAction(org: string, locationId: string, token: string, callId: string, text: string, spoken = false): Promise<ChatResult> {
   const HERE = "features/widget/actions.ts › chatSendAction";
   const body = String(text ?? "").trim().slice(0, MAX_TEXT);
   trace("action", HERE, `① browser sent a chat message (${body.length} characters) as a server action`);
@@ -386,7 +398,7 @@ export async function chatSendAction(org: string, locationId: string, token: str
       "db",
       "db/front-desk.ts › continueFrontDesk",
       "one turn of the conversation, inside one database transaction",
-      () => continueFrontDesk(s.pool, { locationId, callId, text: body }, Date.now(), { classify: triageClassifier(), ai: conversationAI(), claimBase: claimBase(s.organizationId) }),
+      () => continueFrontDesk(s.pool, { locationId, callId, text: body }, Date.now(), { classify: triageClassifier(), ai: spokenAI(spoken), claimBase: claimBase(s.organizationId) }),
       (t) => `turn saved: ${t.replies.length} reply line(s), triage ${t.triageLevel}, ${t.notes.length} staff note(s)${t.ended ? ", conversation ended" : ""}`,
     );
     await deliverTexts(org, s.organizationId, locationId, r.outbound);

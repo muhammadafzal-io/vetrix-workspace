@@ -125,7 +125,7 @@ describe.skipIf(!registryUrl || !clinicUrl)("adding a clinic", () => {
       await runClinicSetup(registry, tenantId, deps);
 
       await withClient(scratchUrl(), async (clinic) => {
-        expect((await publicTables(clinic)).length).toBe(67);
+        expect((await publicTables(clinic)).length).toBe(70);
         const n = async (sql: string) => Number((await clinic.query<{ n: string }>(sql)).rows[0]!.n);
         expect(await n(`SELECT count(*) AS n FROM locations WHERE status = 'onboarding' AND vertical_locked`)).toBe(1);
         expect(await n(`SELECT count(*) AS n FROM services`)).toBeGreaterThan(10);

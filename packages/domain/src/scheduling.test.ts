@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   checkEligibility,
   findSlots,
+  findSlotsByProvider,
   localParts,
   offerTwo,
   zonedInstant,
@@ -158,6 +159,18 @@ describe("finding slots", () => {
     expect(hm(findSlots(clinic(), { service: service({}), patient: dog, dates: [DAY], notBefore: at("15:05") })[0]!.start)).toBe("15:15");
     const away = provider({ blocked: [{ start: at("00:00"), end: at("23:59") }] });
     expect(find(clinic({ providers: [away] }), service({}))).toHaveLength(0);
+  });
+
+  it("lists each free doctor at each time, so the owner can choose who they see", () => {
+    const busy: Hold[] = [{ providerId: "dr1", start: at("08:00"), end: at("09:00") }];
+    const data = clinic({ holds: busy, providers: [provider({ name: "Dr. Zane" }), provider({ id: "dr2", name: "Dr. Okafor" })] });
+    const all = findSlotsByProvider(data, { service: service({}), patient: dog, dates: [DAY], notBefore: 0 });
+    const at8 = all.filter((s) => hm(s.start) === "08:00").map((s) => s.providerId);
+    const at9 = all.filter((s) => hm(s.start) === "09:00").map((s) => s.providerId);
+    expect(at8).toEqual(["dr2"]);
+    expect(at9).toEqual(["dr2", "dr1"]); // by name: Okafor, Zane
+    expect(all.every((s, i) => i === 0 || s.start >= all[i - 1]!.start)).toBe(true);
+    expect(all.every((s) => s.roomId)).toBe(true);
   });
 
   it("offers a morning and an afternoon choice", () => {

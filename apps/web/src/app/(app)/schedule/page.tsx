@@ -107,9 +107,15 @@ export default async function SchedulePage({
             {selected.patient_name}
             {sp.updated === "completed" ? "" : " "}
             {UPDATED[sp.updated]}{" "}
-            <Link href={`/patients/${selected.patient_id}?tab=history`} className="font-medium underline">
-              Open history
-            </Link>
+            {(sp.updated === "completed" || sp.updated === "checked_in") && shell.permissions.has("records.view") ? (
+              <Link href={`/patients/${selected.patient_id}/visits/${selected.id}`} className="font-medium underline">
+                Add notes and photos
+              </Link>
+            ) : (
+              <Link href={`/patients/${selected.patient_id}?tab=history`} className="font-medium underline">
+                Open history
+              </Link>
+            )}
           </p>
         </Alert>
       )}
@@ -133,7 +139,7 @@ export default async function SchedulePage({
             </>
           )}
         </div>
-        {selected && <VisitPanel appt={selected} date={date} timezone={tz} canManage={canManage} vaccines={vaccines} canRecordVaccines={canRecordVaccines} />}
+        {selected && <VisitPanel appt={selected} date={date} timezone={tz} canManage={canManage} vaccines={vaccines} canRecordVaccines={canRecordVaccines} canSeeRecords={shell.permissions.has("records.view")} />}
       </div>
     </>
   );

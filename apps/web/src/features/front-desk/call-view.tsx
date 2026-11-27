@@ -11,6 +11,7 @@ import { BrandBackdrop } from "@/components/vetrix/brand-backdrop";
 import { AssistantAvatar, type AssistantStatus } from "@/features/widget/avatar";
 import { cn } from "@/lib/utils";
 import { playRingback } from "./browser-voice";
+import { splitChoices, TimePicker } from "./time-picker";
 
 export type CallPhase = "connecting" | "live" | "ended";
 
@@ -52,6 +53,10 @@ export function CallView({
   onShowChat,
   onEnd,
   onCallAgain,
+  onRetryMic,
+  choices = [],
+  onChoose,
+  onTalk,
   emergency = null,
 }: {
   aiName: string;
@@ -68,6 +73,13 @@ export function CallView({
   onShowChat: () => void;
   onEnd: () => void;
   onCallAgain: () => void;
+  /** Shown with a microphone problem: ask for the microphone again. */
+  onRetryMic?: () => void;
+  /** Answers the AI is waiting for (times, yes/no, pet): tap instead of saying it. */
+  choices?: { label: string; value: string }[];
+  onChoose?: (value: string, label: string) => void;
+  /** Start listening when the call is quiet (nobody speaking or listening). */
+  onTalk?: () => void;
   /** The AI's triage says emergency: the screen turns red with a button to call a person now. */
   emergency?: { name: string; call: { href: string; text: string } | null; detail: string } | null;
 }) {
@@ -79,18 +91,20 @@ export function CallView({
 
   const live = phase === "live";
   const sound = live && (status === "speaking" || status === "listening");
+  // With answers, an error or the emergency card on screen, the face shrinks so the call buttons stay visible.
+  const compact = Boolean(error || emergency || (live && choices.length > 0));
 
   return (
     <div className="relative flex flex-1 flex-col overflow-hidden text-white">
       <BrandBackdrop waves="30%" />
       {emergency && <div className="absolute inset-0 bg-gradient-to-b from-red-700/80 via-red-900/60 to-transparent" aria-hidden />}
 
-      <div className="relative flex flex-1 flex-col items-center px-6 pb-6 pt-8 text-center">
+      <div className={cn("relative flex min-h-0 flex-1 flex-col items-center overflow-y-auto px-6 pb-6 text-center", compact ? "pt-4" : "pt-8")}>
         <p className="text-caption font-medium uppercase tracking-wider text-white/60">{phase === "ended" ? "Call ended" : emergency ? "Possible emergency" : "Voice call"}</p>
         <p className="mt-1 text-small text-white/70">{subtitle}</p>
 
         {/* The face, with rings: ringing while connecting, breathing while it speaks. */}
-        <div className="relative my-8 flex items-center justify-center">
+        <div className={cn("relative flex items-center justify-center", compact ? "-my-2 scale-75" : "my-8")}>
           {phase === "connecting" && (
             <>
               <span className="cw-ring absolute size-28 rounded-full border-2 border-white/40" aria-hidden />
@@ -119,7 +133,7 @@ export function CallView({
         </p>
 
         {/* Sound bars: moving while someone is talking, flat when quiet. */}
-        <div className="mt-5 flex h-8 items-center gap-1" aria-hidden>
+        <div className={cn("flex h-8 items-center gap-1", compact ? "mt-2" : "mt-5")} aria-hidden>
           {Array.from({ length: 13 }, (_, i) => (
             <span
               key={i}
@@ -137,7 +151,16 @@ export function CallView({
               {caption.text}
             </p>
           )}
-          {error && <p className="mt-2 rounded-xl bg-destructive/90 px-3 py-2 text-caption text-white">{error}</p>}
+          {error && (
+            <div role="alert" className="mt-2 grid gap-2 rounded-xl bg-destructive/90 px-3 py-2 text-caption text-white">
+              <p>{error}</p>
+              {onRetryMic && phase !== "ended" && (
+                <button type="button" onClick={onRetryMic} className="justify-self-center rounded-full bg-white px-4 py-1.5 text-caption font-semibold text-destructive hover:bg-white/90">
+                  Try again
+                </button>
+              )}
+            </div>
+          )}
         </div>
 
         {emergency && (
@@ -153,6 +176,36 @@ export function CallView({
           </div>
         )}
 
+        {live && onTalk && status === "online" && !muted && !error && (
+          <button
+            type="button"
+            onClick={onTalk}
+            className="mt-4 flex items-center gap-2 rounded-full bg-white px-5 py-2.5 text-small font-semibold text-primary-dark shadow-lg hover:bg-white/90"
+          >
+            <Mic className="size-4" aria-hidden /> Tap to talk
+          </button>
+        )}
+
+        {live && choices.length > 0 && onChoose && (
+          <div className="mt-4 flex max-w-sm flex-wrap justify-center gap-2" role="group" aria-label="Say it, or tap an answer">
+            {splitChoices(choices).quick.map((c) => (
+              <button
+                key={c.value + c.label}
+                type="button"
+                onClick={() => onChoose(c.value, c.label)}
+                className="rounded-full border border-white/40 bg-white/10 px-3.5 py-2 text-small font-semibold text-white hover:bg-white hover:text-primary-dark"
+              >
+                {c.label}
+              </button>
+            ))}
+          </div>
+        )}
+        {live && onChoose && splitChoices(choices).times.length > 0 && (
+          <div className="mt-3 w-full max-w-sm">
+            <TimePicker times={splitChoices(choices).times} onPick={onChoose} tone="dark" />
+          </div>
+        )}
+
         <div className="mt-auto w-full">
           {phase === "ended" ? (
             <div className="grid grid-cols-2 gap-3 pt-6">
@@ -164,7 +217,7 @@ export function CallView({
               </button>
             </div>
           ) : (
-            <div className="flex items-start justify-center gap-7 pt-6">
+            <div className={cn("flex items-start justify-center gap-7", compact ? "pt-4" : "pt-6")}>
               <CallButton label={muted ? "Unmute" : "Mute"} onClick={onToggleMute} disabled={!live} active={muted}>
                 {muted ? <MicOff className="size-6" aria-hidden /> : <Mic className="size-6" aria-hidden />}
               </CallButton>

@@ -6,6 +6,15 @@
 // Without a key, the scripted sandbox AI answers. No code change either way.
 import "server-only";
 import {
+  acceptParsedPrescription,
+  acceptTidiedNote,
+  buildPrescriptionParsePrompt,
+  buildTidyNotePrompt,
+  PRESCRIPTION_PARSE_SCHEMA,
+  sandboxParsePrescription,
+  TIDY_NOTE_SCHEMA,
+  type ParsedPrescription,
+  type VisitEntryKind,
   acceptRewrite,
   buildCampaignPlanPrompt,
   buildCampaignPrompt,
@@ -59,6 +68,8 @@ export const PROMPT_CACHE_KEY = {
   rewrite: "vetrix-rewrite",
   campaign: "vetrix-campaign",
   plan: "vetrix-campaign-plan",
+  tidy: "vetrix-visit-tidy",
+  rx: "vetrix-visit-rx",
 } as const;
 
 interface Usage {
@@ -143,7 +154,7 @@ async function askJson(
   prompt: { system: string; user: string },
   schema: { name: string; schema: object },
   log: Logger,
-  what: "understand" | "rewrite" | "campaign" | "plan",
+  what: "understand" | "rewrite" | "campaign" | "plan" | "tidy" | "rx",
   fetchImpl: typeof fetch,
   timeoutMs = TIMEOUT_MS,
 ): Promise<Record<string, unknown> | null> {
@@ -275,4 +286,42 @@ export async function planCampaign(request: string, options: CampaignPlanOptions
     if (answer) logger.info("campaign plan from the model did not pass the checks; using the sandbox plan");
   }
   return { plan: sandboxCampaignPlan(request, options), source: "sandbox" };
+}
+
+// ---------- Visit records (staff only) ----------
+
+/** Staff wait on screen for these, like campaign drafts. */
+const VISIT_AI_TIMEOUT_MS = 15_000;
+
+/**
+ * Tidies a rough note or recommendation. Only the typed text and the species
+ * are sent. A draft that adds a number, a medicine-like word or a diagnosis
+ * is thrown away (acceptTidiedNote). Null without a key or a usable draft:
+ * staff keep their own text.
+ */
+export async function tidyVisitNote(input: { kind: VisitEntryKind; text: string; species: string }, fetchImpl: typeof fetch = fetch): Promise<string | null> {
+  const env = getEnv();
+  if (aiMode(env) !== "openai") return null;
+  const config = { apiKey: env.OPENAI_API_KEY!, model: env.OPENAI_TEXT_MODEL! };
+  const answer = await askJson(config, buildTidyNotePrompt(input), { name: "tidy_note", schema: TIDY_NOTE_SCHEMA }, logger, "tidy", fetchImpl, VISIT_AI_TIMEOUT_MS);
+  const accepted = acceptTidiedNote(input.text, answer?.text);
+  if (answer && !accepted) logger.info("tidied note added something that was not typed; not shown");
+  return accepted?.text ?? null;
+}
+
+/**
+ * Reads a typed prescription line into the form's fields. With a key the
+ * model reads it (each field checked against the text); without one, or if
+ * the model fails, fixed rules read common shorthand ("Sandbox").
+ */
+export async function readPrescriptionLine(text: string, fetchImpl: typeof fetch = fetch): Promise<{ fields: ParsedPrescription; source: "ai" | "sandbox" } | null> {
+  const env = getEnv();
+  if (aiMode(env) === "openai") {
+    const config = { apiKey: env.OPENAI_API_KEY!, model: env.OPENAI_TEXT_MODEL! };
+    const answer = await askJson(config, buildPrescriptionParsePrompt(text), { name: "prescription", schema: PRESCRIPTION_PARSE_SCHEMA }, logger, "rx", fetchImpl, VISIT_AI_TIMEOUT_MS);
+    const fields = acceptParsedPrescription(text, answer);
+    if (fields) return { fields, source: "ai" };
+  }
+  const fields = sandboxParsePrescription(text);
+  return fields ? { fields, source: "sandbox" } : null;
 }

@@ -41,9 +41,10 @@ import { CheckboxField } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
-import { browserVoiceSupport, useSpokenTurns } from "@/features/front-desk/browser-voice";
+import { browserVoiceSupport, ensureMicrophone, useSpokenTurns } from "@/features/front-desk/browser-voice";
 import { AssistantAvatar, statusText, type AssistantStatus } from "./avatar";
 import { CallView, OnCallBar, useCallClock, type CallPhase } from "@/features/front-desk/call-view";
+import { splitChoices, TimePicker } from "@/features/front-desk/time-picker";
 import {
   addPetAction,
   bookAction,
@@ -479,6 +480,12 @@ function AssistantHome({
 }) {
   const canTalk = useCanTalk();
   const [draft, setDraft] = useState("");
+  // Ask for the microphone in this click: the browser only shows its prompt
+  // for a request the person just made (listening starts later, after the code check).
+  const talkNow = () => {
+    void ensureMicrophone();
+    onTalk();
+  };
   const chip = "rounded-full border border-primary/30 bg-card px-3.5 py-2 text-small font-medium text-foreground shadow-sm transition-colors hover:border-primary hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
   return (
     <div className="flex flex-1 flex-col">
@@ -523,7 +530,7 @@ function AssistantHome({
             Ask a question
           </button>
           {canTalk && (
-            <button type="button" className={chip} onClick={onTalk}>
+            <button type="button" className={chip} onClick={talkNow}>
               <Mic className="mr-1.5 inline size-4 text-primary" aria-hidden />
               Talk out loud
             </button>
@@ -537,7 +544,7 @@ function AssistantHome({
           onChange={setDraft}
           onSend={() => draft.trim() && onChat(draft.trim())}
           placeholder={`Message ${clinic.aiName}…`}
-          mic={canTalk ? { listening: false, onClick: onTalk } : null}
+          mic={canTalk ? { listening: false, onClick: talkNow } : null}
         />
         <p className="text-center text-[11px] text-muted-foreground">
           We confirm your mobile number with a code first. {clinic.aiName} is an AI; staff see every conversation. <EmergencyLink clinic={clinic} />
@@ -1462,7 +1469,7 @@ function Chat({
 
   /** Sends one message and shows the replies. */
   const send = async (id: string, body: string) => {
-    const r = await chatSendAction(org, loc, token, id, body);
+    const r = await chatSendAction(org, loc, token, id, body, view === "call" && talking);
     if (!r.ok) {
       if (r.reason === "session" && r.error.startsWith("For your security")) return onExpired();
       return setError(r.error);
@@ -1547,6 +1554,7 @@ function Chat({
     // On the call screen the voice starts once the call has connected.
     active: talking && Boolean(callId) && (view === "chat" || connectedAt !== null),
     autoListen: !muted,
+    keepListening: view === "call",
     replies: useMemo(() => lines.flatMap((l) => (l.who === "ai" ? [{ id: l.id, text: l.text }] : [])), [lines]),
     busy: pending,
     ended,
@@ -1568,6 +1576,7 @@ function Chat({
     setEnded(true);
   };
   const callAgain = () => {
+    void ensureMicrophone();
     ringStart.current = Date.now();
     setConnectedAt(null);
     setMuted(false);
@@ -1582,7 +1591,7 @@ function Chat({
     setTalking(true);
     setConnectedAt(Date.now());
     setView("call");
-    spoken.listenNow();
+    void spoken.retryMicrophone();
   };
   const toggleMute = () => {
     if (!muted) spoken.cancelListening();
@@ -1609,6 +1618,14 @@ function Chat({
         caption={caption}
         muted={muted}
         error={error ?? spoken.error}
+        onRetryMic={!error && spoken.micBlocked ? () => void spoken.retryMicrophone() : undefined}
+        choices={pending || ended ? [] : choices}
+        onTalk={() => spoken.listenNow()}
+        onChoose={(value, label) => {
+          // A tap answers like speech: stop listening and Riley's voice, then send.
+          spoken.cancelListening();
+          say(value, label);
+        }}
         onToggleMute={toggleMute}
         onShowChat={() => setView("chat")}
         onEnd={hangUp}
@@ -1623,7 +1640,7 @@ function Chat({
       // Turning the voice on: earlier messages are not read out again.
       spoken.skipExisting();
       setTalking(true);
-      spoken.listenNow();
+      void spoken.retryMicrophone();
     } else spoken.mic();
   };
 
@@ -1689,7 +1706,7 @@ function Chat({
         )}
         {choices.length > 0 && !pending && !ended && (
           <div className="cw-in flex flex-wrap gap-2 pl-10 pt-1" role="group" aria-label="Quick answers">
-            {choices.map((c) => (
+            {splitChoices(choices).quick.map((c) => (
               <button
                 key={c.value + c.label}
                 type="button"
@@ -1699,6 +1716,11 @@ function Chat({
                 {c.label}
               </button>
             ))}
+          </div>
+        )}
+        {!pending && !ended && splitChoices(choices).times.length > 0 && (
+          <div className="cw-in pl-10 pt-1">
+            <TimePicker times={splitChoices(choices).times} onPick={(value, label) => say(value, label)} />
           </div>
         )}
         {callId && lines.length <= 1 && choices.length === 0 && !pending && !first && (
@@ -1711,7 +1733,18 @@ function Chat({
           </div>
         )}
         {error && <Alert variant="error">{error}</Alert>}
-        {spoken.error && <Alert variant="error">{spoken.error}</Alert>}
+        {spoken.error && (
+          <Alert variant="error">
+            <span className="grid gap-2">
+              {spoken.error}
+              {spoken.micBlocked && (
+                <Button type="button" size="sm" variant="outline" className="justify-self-start" onClick={() => void spoken.retryMicrophone()}>
+                  Try again
+                </Button>
+              )}
+            </span>
+          </Alert>
+        )}
         <div ref={end} />
       </div>
 

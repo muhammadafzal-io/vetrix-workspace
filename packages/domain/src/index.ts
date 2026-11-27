@@ -26,3 +26,5 @@ export * from "./trace";
 export * from "./clinic-setup";
 export * from "./patient-history";
 export * from "./campaigns";
+export * from "./visit-records";
+export * from "./visit-records-ai";

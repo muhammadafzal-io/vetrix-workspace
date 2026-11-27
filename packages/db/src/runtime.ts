@@ -25,3 +25,4 @@ export * from "./booking-links";
 export * from "./widget";
 export * from "./patient-history";
 export * from "./campaigns";
+export * from "./visit-records";

@@ -88,6 +88,15 @@ export const envSchema = z
       .transform((v) => (v ? v : undefined))
       .refine((v) => v === undefined || Buffer.from(v, "base64").length === 32, "Must be 32 random bytes, base64 (openssl rand -base64 32)"),
     SENTRY_DSN: optional,
+    // Where visit photos are stored (lib/file-store.ts). "local": a folder on
+    // this machine (development only; serverless disks are wiped). "gcs": a
+    // private Google Cloud Storage bucket. Unset: local in development; in
+    // production, photo uploads are refused until gcs is set up.
+    FILE_STORAGE: z.enum(["local", "gcs"]).optional(),
+    GCS_BUCKET: optional,
+    // A service account key (JSON), base64-encoded, with Storage Object Admin
+    // on that bucket only. Not needed on Cloud Run, which uses its own account.
+    GCS_CREDENTIALS_BASE64: optional,
   })
   .superRefine((env, ctx) => {
     if (!env.MESSAGING_MODE && env.NODE_ENV === "production") {
@@ -110,6 +119,12 @@ export const envSchema = z
       if (!env.JOBS_SECRET || env.JOBS_SECRET.length < 32) {
         ctx.addIssue({ code: "custom", path: ["JOBS_SECRET"], message: "Required in production: at least 32 random characters" });
       }
+    }
+    if (env.FILE_STORAGE === "gcs" && !env.GCS_BUCKET) {
+      ctx.addIssue({ code: "custom", path: ["GCS_BUCKET"], message: "Required when FILE_STORAGE is gcs" });
+    }
+    if (env.FILE_STORAGE === "local" && env.NODE_ENV === "production") {
+      ctx.addIssue({ code: "custom", path: ["FILE_STORAGE"], message: "local storage is for development only: use gcs in production" });
     }
     // A key without a model would fail on the first call.
     if (env.OPENAI_API_KEY && !env.OPENAI_TEXT_MODEL) {

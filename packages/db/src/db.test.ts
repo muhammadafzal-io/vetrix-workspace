@@ -51,7 +51,7 @@ describe("database_ref", () => {
 describe("migration files", () => {
   it("loads the registry and clinic files in order", () => {
     expect(loadMigrations("registry").map((m) => m.version)).toEqual(["001_registry", "003_auth", "005_phone_numbers", "010_platform_admin"]);
-    expect(loadMigrations("clinic").map((m) => m.version)).toEqual(["002_clinic", "004_front_desk", "006_messages", "007_jobs_and_replies", "008_booking_links", "009_widget", "011_patient_history", "012_reminder_delivery", "013_campaigns", "014_campaign_audience_snapshot", "015_campaign_chosen_recipients", "016_campaign_kind"]);
+    expect(loadMigrations("clinic").map((m) => m.version)).toEqual(["002_clinic", "004_front_desk", "006_messages", "007_jobs_and_replies", "008_booking_links", "009_widget", "011_patient_history", "012_reminder_delivery", "013_campaigns", "014_campaign_audience_snapshot", "015_campaign_chosen_recipients", "016_campaign_kind", "017_visit_records"]);
   });
 
   it("uses version numbers only once across both folders", () => {
@@ -90,5 +90,17 @@ describe("planMigrations", () => {
   it("refuses when an applied file is missing", () => {
     const applied = [{ version: "003_gone", checksum: "x" }];
     expect(() => planMigrations("clinic", files, applied, ["patients"])).toThrow(/file is missing/);
+  });
+});
+
+describe("visit records stay away from the AI", () => {
+  it("no AI-facing module reads the visit record tables", async () => {
+    const { readFileSync } = await import("node:fs");
+    const { fileURLToPath } = await import("node:url");
+    // The front desk (calls, texts, web chat), replies, the widget and reminders all feed the AI or owners.
+    for (const file of ["front-desk.ts", "replies.ts", "widget.ts", "retention.ts", "campaigns.ts", "messages.ts"]) {
+      const source = readFileSync(fileURLToPath(new URL(`./${file}`, import.meta.url)), "utf8");
+      expect(source, file).not.toMatch(/visit_entries|visit_prescriptions|visit_photos|visit-records/);
+    }
   });
 });
